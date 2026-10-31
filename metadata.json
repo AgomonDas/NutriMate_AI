@@ -1,0 +1,8 @@
+{
+  "name": "NutriMate AI",
+  "description": "Smart student meal planner and food budget companion with AI assistance and partner discounts.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
