@@ -1,0 +1,140 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User profile with student details, budget buckets, and planned feasts",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "Owner user UID" },
+        "name": { "type": "string", "description": "Student full name" },
+        "phone": { "type": "string", "description": "Phone number" },
+        "city": { "type": "string", "description": "City of residence" },
+        "age": { "type": "integer", "description": "Age in years" },
+        "heightCm": { "type": "integer", "description": "Height in cm" },
+        "weightKg": { "type": "integer", "description": "Weight in kg" },
+        "isVegetarian": { "type": "boolean", "description": "Vegetarian diet flag" },
+        "allowLocation": { "type": "boolean", "description": "Location permission flag" },
+        "goesToGym": { "type": "boolean", "description": "Gym training flag" },
+        "isStudent": { "type": "boolean", "description": "Student flag" },
+        "university": { "type": "string", "description": "University or campus" },
+        "monthlyBudget": { "type": "integer", "description": "Monthly food budget in BDT" },
+        "totalSpentThisMonth": { "type": "integer", "description": "Total monthly spending in BDT" },
+        "totalSavedFromDiscounts": { "type": "integer", "description": "Total savings in BDT" },
+        "onMessPlan": { "type": "boolean", "description": "Mess / hall plan flag" },
+        "dailyCalorieGoal": { "type": "integer", "description": "Daily kcal target" },
+        "unallocatedPaisa": { "type": "integer", "description": "Unallocated reserve balance in integer paisa" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Creation timestamp via serverTimestamp" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Last update timestamp via serverTimestamp" }
+      },
+      "required": ["userId", "name", "city", "dailyCalorieGoal", "monthlyBudget", "createdAt"]
+    },
+    "MealItem": {
+      "title": "MealItem",
+      "description": "Daily meal slot configuration and chosen food option",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Meal slot identifier (e.g. breakfast, lunch)" },
+        "name": { "type": "string", "description": "Meal slot title" },
+        "emoji": { "type": "string", "description": "Meal icon emoji" },
+        "budget": { "type": "integer", "description": "Allocated budget for meal" },
+        "targetKcal": { "type": "integer", "description": "Target calories in kcal" },
+        "activeHourLimit": { "type": "integer", "description": "Cutoff hour in 24h format" },
+        "selectedPlace": { "type": "string", "description": "Chosen restaurant or mess" },
+        "selectedTitle": { "type": "string", "description": "Chosen dish name" },
+        "selectedPrice": { "type": "integer", "description": "Item price in BDT" },
+        "isPartner": { "type": "boolean", "description": "Partner discount flag" },
+        "discountTag": { "type": "string", "description": "Discount badge text" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Creation timestamp" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Update timestamp" }
+      },
+      "required": ["id", "name", "budget", "targetKcal", "selectedPlace", "selectedTitle", "selectedPrice", "createdAt"]
+    },
+    "PaymentRecord": {
+      "title": "PaymentRecord",
+      "description": "Logged partner transaction receipt with transaction ID",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Payment record ID" },
+        "trxId": { "type": "string", "description": "bKash / Nagad Transaction ID" },
+        "vendorName": { "type": "string", "description": "Merchant or restaurant name" },
+        "billAmount": { "type": "integer", "description": "Original bill in BDT" },
+        "discountAmount": { "type": "integer", "description": "Discount in BDT" },
+        "netPayable": { "type": "integer", "description": "Net paid in BDT" },
+        "paymentMethod": { "type": "string", "description": "Payment method used (bKash/Nagad)" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Transaction timestamp" }
+      },
+      "required": ["id", "vendorName", "billAmount", "discountAmount", "netPayable", "paymentMethod", "createdAt"]
+    },
+    "CentralFoodItem": {
+      "title": "CentralFoodItem",
+      "description": "Curated master list of student meals and partner options",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Food ID" },
+        "name": { "type": "string", "description": "Meal name" },
+        "restaurant": { "type": "string", "description": "Restaurant / stall name" },
+        "pricePaisa": { "type": "integer", "description": "Price in integer paisa" },
+        "calories": { "type": "integer", "description": "Calories in kcal" },
+        "mealSlot": { "type": "string", "description": "Recommended slot" },
+        "isPartner": { "type": "boolean", "description": "Partner restaurant flag" },
+        "discountTag": { "type": "string", "description": "Partner discount badge" }
+      },
+      "required": ["id", "name", "restaurant", "pricePaisa", "calories", "mealSlot"]
+    },
+    "PartnerRestaurant": {
+      "title": "PartnerRestaurant",
+      "description": "Partner outlets offering student discounts",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Partner ID" },
+        "name": { "type": "string", "description": "Outlet name" },
+        "discountRate": { "type": "number", "description": "Discount percentage e.g. 0.10" },
+        "campusArea": { "type": "string", "description": "Campus proximity / zone" }
+      },
+      "required": ["id", "name", "discountRate"]
+    },
+    "CommunityFoodSubmission": {
+      "title": "CommunityFoodSubmission",
+      "description": "Crowdsourced custom meals logged by students for developer curation",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Submission ID" },
+        "submittedBy": { "type": "string", "description": "Student user ID" },
+        "restaurantName": { "type": "string", "description": "Restaurant name" },
+        "dishName": { "type": "string", "description": "Dish title" },
+        "pricePaisa": { "type": "integer", "description": "Spent amount in paisa" },
+        "calories": { "type": "integer", "description": "Estimated calories" },
+        "mealCategory": { "type": "string", "description": "Meal slot (breakfast, lunch, etc.)" },
+        "status": { "type": "string", "description": "Review status (pending, approved)" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Submission timestamp" }
+      },
+      "required": ["id", "submittedBy", "restaurantName", "dishName", "pricePaisa", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/central_foods/{foodId}": {
+      "schema": { "$ref": "#/entities/CentralFoodItem" },
+      "description": "Master catalog of verified campus meals"
+    },
+    "/partner_restaurants/{partnerId}": {
+      "schema": { "$ref": "#/entities/PartnerRestaurant" },
+      "description": "Student discount partners"
+    },
+    "/community_food_submissions/{submissionId}": {
+      "schema": { "$ref": "#/entities/CommunityFoodSubmission" },
+      "description": "Crowdsourced submissions staging collection"
+    },
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "User profile, budget, and fitness goals"
+    },
+    "/users/{userId}/meals/{mealId}": {
+      "schema": { "$ref": "#/entities/MealItem" },
+      "description": "Active meal plan options for the user"
+    },
+    "/users/{userId}/payments/{paymentId}": {
+      "schema": { "$ref": "#/entities/PaymentRecord" },
+      "description": "Partner payment receipts and billing history"
+    }
+  }
+}

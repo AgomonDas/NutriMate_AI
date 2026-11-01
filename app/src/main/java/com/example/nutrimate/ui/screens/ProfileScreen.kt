@@ -196,25 +196,41 @@ fun ProfileScreen(
             }
         }
 
-        // Restart Onboarding Button
+        // Account & Actions
         item {
             Spacer(modifier = Modifier.height(10.dp))
-            OutlinedButton(
-                onClick = { viewModel.restartOnboarding() },
-                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
-                shape = RoundedCornerShape(16.dp),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(50.dp)
-                    .testTag("restart_onboarding_btn")
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Refresh,
-                    contentDescription = "Restart",
-                    modifier = Modifier.size(18.dp)
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("Re-run Onboarding Setup", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedButton(
+                    onClick = { viewModel.restartOnboarding() },
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(50.dp)
+                        .testTag("restart_onboarding_btn")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Refresh,
+                        contentDescription = "Restart",
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Re-run Onboarding Setup", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                }
+
+                Button(
+                    onClick = {
+                        com.google.firebase.auth.FirebaseAuth.getInstance().signOut()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color.White.copy(alpha = 0.15f)),
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(50.dp)
+                        .testTag("sign_out_button")
+                ) {
+                    Text("Sign out of Google Account", color = Color(0xFFFF8A8A), fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                }
             }
         }
     }

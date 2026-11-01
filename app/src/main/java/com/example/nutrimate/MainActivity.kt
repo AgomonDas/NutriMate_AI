@@ -5,7 +5,6 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.activity.viewModels
 import androidx.compose.animation.*
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
@@ -25,112 +24,169 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.lifecycle.viewmodel.initializer
+import androidx.lifecycle.viewmodel.viewModelFactory
+import com.example.nutrimate.data.repository.NutriMateFirestoreRepository
 import com.example.nutrimate.model.AppNavTab
 import com.example.nutrimate.ui.screens.*
 import com.example.nutrimate.ui.theme.*
 import com.example.nutrimate.viewmodel.NutriMateViewModel
+import com.google.firebase.Firebase
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.auth.FirebaseUser
+import com.google.firebase.auth.auth
+import com.google.firebase.firestore.FirebaseFirestore
 
 class MainActivity : ComponentActivity() {
-    private val viewModel: NutriMateViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
+        val dbId = getString(R.string.firestore_database_id)
+        val firestore = FirebaseFirestore.getInstance(dbId)
+        val repository = NutriMateFirestoreRepository(firestore)
+
         setContent {
             NutriMateTheme {
-                val uiState by viewModel.uiState.collectAsState()
+                var currentUser by remember { mutableStateOf<FirebaseUser?>(Firebase.auth.currentUser) }
 
-                // Back navigation handling
-                BackHandler(enabled = uiState.isScanning) {
-                    viewModel.dismissScan()
-                }
-                BackHandler(enabled = !uiState.isScanning && uiState.isChatOpen) {
-                    viewModel.closeChat()
-                }
-                BackHandler(
-                    enabled = !uiState.isScanning && !uiState.isChatOpen &&
-                            uiState.onboardingCompleted && uiState.currentTab != AppNavTab.TODAY
-                ) {
-                    viewModel.selectTab(AppNavTab.TODAY)
-                }
-
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(
-                            brush = Brush.verticalGradient(
-                                colors = listOf(
-                                    Color(0xFF0F8F78),
-                                    Color(0xFF2A4BD6),
-                                    Color(0xFF131A32),
-                                    Color(0xFF0B1020)
-                                )
-                            )
-                        )
-                        .systemBarsPadding()
-                ) {
-                    if (!uiState.onboardingCompleted) {
-                        OnboardingScreen(
-                            viewModel = viewModel,
-                            modifier = Modifier.fillMaxSize()
-                        )
-                    } else {
-                        // Main content based on active tab
-                        Box(modifier = Modifier.fillMaxSize()) {
-                            when (uiState.currentTab) {
-                                AppNavTab.TODAY -> HomeScreen(viewModel = viewModel)
-                                AppNavTab.MONTH -> MonthScreen(viewModel = viewModel)
-                                AppNavTab.ME -> ProfileScreen(viewModel = viewModel)
-                                else -> HomeScreen(viewModel = viewModel)
-                            }
-                        }
-
-                        // Floating bottom navigation bar
-                        NutriMateBottomNavBar(
-                            currentTab = uiState.currentTab,
-                            onTabSelected = { tab -> viewModel.selectTab(tab) },
-                            onScanClick = { viewModel.startScan() },
-                            modifier = Modifier
-                                .align(Alignment.BottomCenter)
-                                .padding(horizontal = 20.dp, vertical = 18.dp)
-                        )
-
-                        // AI Chat Sheet
-                        AnimatedVisibility(
-                            visible = uiState.isChatOpen,
-                            enter = slideInVertically(
-                                initialOffsetY = { it },
-                                animationSpec = tween(350)
-                            ) + fadeIn(),
-                            exit = slideOutVertically(
-                                targetOffsetY = { it },
-                                animationSpec = tween(300)
-                            ) + fadeOut()
-                        ) {
-                            ChatSheet(
-                                viewModel = viewModel,
-                                onDismiss = { viewModel.closeChat() }
-                            )
-                        }
-
-                        // QR Scanner / Pay Overlay
-                        AnimatedVisibility(
-                            visible = uiState.isScanning,
-                            enter = fadeIn(animationSpec = tween(300)),
-                            exit = fadeOut(animationSpec = tween(250))
-                        ) {
-                            ScanPayScreen(
-                                viewModel = viewModel,
-                                onClose = { viewModel.dismissScan() }
-                            )
-                        }
+                DisposableEffect(Unit) {
+                    val authListener = FirebaseAuth.AuthStateListener { auth ->
+                        currentUser = auth.currentUser
+                    }
+                    Firebase.auth.addAuthStateListener(authListener)
+                    onDispose {
+                        Firebase.auth.removeAuthStateListener(authListener)
                     }
                 }
+
+                val user = currentUser
+                if (user == null) {
+                    // Auth Gate: user must sign in with Google
+                    AuthScreen(
+                        onAuthSuccess = {
+                            currentUser = Firebase.auth.currentUser
+                        }
+                    )
+                } else {
+                    // Authenticated App Session
+                    val gatekeeper = remember(user.uid) {
+                        com.example.nutrimate.data.feast.FeastBudgetGatekeeper(firestore, 700_000L)
+                    }
+                    val viewModel: NutriMateViewModel = viewModel(
+                        key = user.uid,
+                        factory = viewModelFactory {
+                            initializer {
+                                NutriMateViewModel(
+                                    repository = repository,
+                                    currentUserId = user.uid,
+                                    gatekeeper = gatekeeper
+                                )
+                            }
+                        }
+                    )
+
+                    AppContent(viewModel = viewModel)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun AppContent(viewModel: NutriMateViewModel) {
+    val uiState by viewModel.uiState.collectAsState()
+
+    // Back navigation handling
+    BackHandler(enabled = uiState.isScanning) {
+        viewModel.dismissScan()
+    }
+    BackHandler(enabled = !uiState.isScanning && uiState.isChatOpen) {
+        viewModel.closeChat()
+    }
+    BackHandler(
+        enabled = !uiState.isScanning && !uiState.isChatOpen &&
+                uiState.onboardingCompleted && uiState.currentTab != AppNavTab.TODAY
+    ) {
+        viewModel.selectTab(AppNavTab.TODAY)
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(
+                brush = Brush.verticalGradient(
+                    colors = listOf(
+                        Color(0xFF0F8F78),
+                        Color(0xFF2A4BD6),
+                        Color(0xFF131A32),
+                        Color(0xFF0B1020)
+                    )
+                )
+            )
+            .systemBarsPadding()
+    ) {
+        if (!uiState.onboardingCompleted) {
+            OnboardingScreen(
+                viewModel = viewModel,
+                modifier = Modifier.fillMaxSize()
+            )
+        } else {
+            // Main content based on active tab
+            Box(modifier = Modifier.fillMaxSize()) {
+                when (uiState.currentTab) {
+                    AppNavTab.TODAY -> HomeScreen(viewModel = viewModel)
+                    AppNavTab.MONTH -> MonthScreen(viewModel = viewModel)
+                    AppNavTab.ME -> ProfileScreen(viewModel = viewModel)
+                    else -> HomeScreen(viewModel = viewModel)
+                }
+            }
+
+            // Floating bottom navigation bar
+            NutriMateBottomNavBar(
+                currentTab = uiState.currentTab,
+                onTabSelected = { tab -> viewModel.selectTab(tab) },
+                onScanClick = { viewModel.startScan() },
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(horizontal = 20.dp, vertical = 18.dp)
+            )
+
+            // AI Chat Sheet
+            AnimatedVisibility(
+                visible = uiState.isChatOpen,
+                enter = slideInVertically(
+                    initialOffsetY = { it },
+                    animationSpec = tween(350)
+                ) + fadeIn(),
+                exit = slideOutVertically(
+                    targetOffsetY = { it },
+                    animationSpec = tween(300)
+                ) + fadeOut()
+            ) {
+                ChatSheet(
+                    viewModel = viewModel,
+                    onDismiss = { viewModel.closeChat() }
+                )
+            }
+
+            // QR Scanner / Pay Overlay
+            AnimatedVisibility(
+                visible = uiState.isScanning,
+                enter = fadeIn(animationSpec = tween(300)),
+                exit = fadeOut(animationSpec = tween(250))
+            ) {
+                ScanPayScreen(
+                    viewModel = viewModel,
+                    onClose = { viewModel.dismissScan() }
+                )
             }
         }
     }

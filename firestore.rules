@@ -1,0 +1,173 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidUserProfile(data) {
+      return data.userId is string && data.userId == request.auth.uid &&
+             data.name is string && data.name.size() > 0 && data.name.size() <= 100 &&
+             (!('phone' in data) || (data.phone is string && data.phone.size() <= 30)) &&
+             data.city is string && data.city.size() <= 100 &&
+             (!('age' in data) || (data.age is int && data.age >= 10 && data.age <= 120)) &&
+             (!('heightCm' in data) || (data.heightCm is int && data.heightCm >= 50 && data.heightCm <= 300)) &&
+             (!('weightKg' in data) || (data.weightKg is int && data.weightKg >= 20 && data.weightKg <= 400)) &&
+             (!('isVegetarian' in data) || data.isVegetarian is bool) &&
+             (!('allowLocation' in data) || data.allowLocation is bool) &&
+             (!('goesToGym' in data) || data.goesToGym is bool) &&
+             (!('isStudent' in data) || data.isStudent is bool) &&
+             (!('university' in data) || (data.university is string && data.university.size() <= 100)) &&
+             data.monthlyBudget is int && data.monthlyBudget >= 0 &&
+             (!('totalSpentThisMonth' in data) || (data.totalSpentThisMonth is int && data.totalSpentThisMonth >= 0)) &&
+             (!('totalSavedFromDiscounts' in data) || (data.totalSavedFromDiscounts is int && data.totalSavedFromDiscounts >= 0)) &&
+             (!('unallocatedPaisa' in data) || (data.unallocatedPaisa is int && data.unallocatedPaisa >= 0)) &&
+             (!('onMessPlan' in data) || data.onMessPlan is bool) &&
+             data.dailyCalorieGoal is int && data.dailyCalorieGoal >= 500 && data.dailyCalorieGoal <= 10000;
+    }
+
+    function isValidMealItem(data) {
+      return data.id is string && isValidId(data.id) &&
+             data.name is string && data.name.size() > 0 && data.name.size() <= 60 &&
+             (!('emoji' in data) || (data.emoji is string && data.emoji.size() <= 20)) &&
+             data.budget is int && data.budget >= 0 &&
+             data.targetKcal is int && data.targetKcal >= 0 &&
+             (!('activeHourLimit' in data) || (data.activeHourLimit is int && data.activeHourLimit >= 0 && data.activeHourLimit <= 24)) &&
+             data.selectedPlace is string && data.selectedPlace.size() > 0 && data.selectedPlace.size() <= 120 &&
+             data.selectedTitle is string && data.selectedTitle.size() > 0 && data.selectedTitle.size() <= 120 &&
+             data.selectedPrice is int && data.selectedPrice >= 0 &&
+             (!('isPartner' in data) || data.isPartner is bool) &&
+             (!('discountTag' in data) || (data.discountTag is string && data.discountTag.size() <= 40));
+    }
+
+    function isValidPaymentRecord(data) {
+      return data.id is string && isValidId(data.id) &&
+             data.vendorName is string && data.vendorName.size() > 0 && data.vendorName.size() <= 120 &&
+             data.billAmount is int && data.billAmount >= 0 &&
+             data.discountAmount is int && data.discountAmount >= 0 &&
+             data.netPayable is int && data.netPayable >= 0 &&
+             data.paymentMethod is string && data.paymentMethod.size() <= 40;
+    }
+
+    function isValidCommunitySubmission(data) {
+      return data.id is string && isValidId(data.id) &&
+             data.submittedBy is string && data.submittedBy == request.auth.uid &&
+             data.restaurantName is string && data.restaurantName.size() > 0 && data.restaurantName.size() <= 120 &&
+             data.dishName is string && data.dishName.size() > 0 && data.dishName.size() <= 120 &&
+             data.pricePaisa is int && data.pricePaisa >= 0 &&
+             (!('calories' in data) || (data.calories is int && data.calories >= 0)) &&
+             (!('mealCategory' in data) || (data.mealCategory is string && data.mealCategory.size() <= 40)) &&
+             data.status == 'pending';
+    }
+
+    // Default deny all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Central Foods Catalog (Read-only for users)
+    match /central_foods/{foodId} {
+      allow read: if isSignedIn();
+      allow write: if false; // Curated by admins / devs
+    }
+
+    // Partner Restaurants (Read-only for users)
+    match /partner_restaurants/{partnerId} {
+      allow read: if isSignedIn();
+      allow write: if false;
+    }
+
+    // Community Submissions (Dev staging table)
+    match /community_food_submissions/{submissionId} {
+      allow create: if isSignedIn() &&
+                       isValidId(submissionId) &&
+                       incoming().id == submissionId &&
+                       incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                       isValidCommunitySubmission(incoming());
+      allow read: if isSignedIn() && resource.data.submittedBy == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    // User profile documents
+    match /users/{userId} {
+      allow get: if isOwner(userId);
+      allow list: if false;
+
+      allow create: if isOwner(userId) &&
+                       incoming().userId == request.auth.uid &&
+                       incoming().keys().hasAll(['userId', 'name', 'city', 'dailyCalorieGoal', 'monthlyBudget', 'createdAt']) &&
+                       incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                       isValidUserProfile(incoming());
+
+      allow update: if isOwner(userId) &&
+                       incoming().userId == existing().userId &&
+                       incoming().createdAt == existing().createdAt &&
+                       isValidUserProfile(incoming()) &&
+                       incoming().diff(existing()).affectedKeys().hasOnly([
+                         'name', 'phone', 'city', 'age', 'heightCm', 'weightKg',
+                         'isVegetarian', 'allowLocation', 'goesToGym', 'isStudent',
+                         'university', 'monthlyBudget', 'totalSpentThisMonth',
+                         'totalSavedFromDiscounts', 'unallocatedPaisa', 'onMessPlan',
+                         'dailyCalorieGoal', 'updatedAt'
+                       ]);
+
+      allow delete: if isOwner(userId);
+
+      // User's custom meal slots subcollection
+      match /meals/{mealId} {
+        allow get, list: if isOwner(userId);
+
+        allow create: if isOwner(userId) &&
+                         isValidId(mealId) &&
+                         incoming().id == mealId &&
+                         incoming().keys().hasAll(['id', 'name', 'budget', 'targetKcal', 'selectedPlace', 'selectedTitle', 'selectedPrice', 'createdAt']) &&
+                         incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                         isValidMealItem(incoming());
+
+        allow update: if isOwner(userId) &&
+                         incoming().id == existing().id &&
+                         incoming().createdAt == existing().createdAt &&
+                         isValidMealItem(incoming()) &&
+                         incoming().diff(existing()).affectedKeys().hasOnly([
+                           'name', 'emoji', 'budget', 'targetKcal', 'activeHourLimit',
+                           'selectedPlace', 'selectedTitle', 'selectedPrice',
+                           'isPartner', 'discountTag', 'updatedAt'
+                         ]);
+
+        allow delete: if isOwner(userId);
+      }
+
+      // User's payment records subcollection
+      match /payments/{paymentId} {
+        allow get, list: if isOwner(userId);
+
+        allow create: if isOwner(userId) &&
+                         isValidId(paymentId) &&
+                         incoming().id == paymentId &&
+                         incoming().keys().hasAll(['id', 'vendorName', 'billAmount', 'discountAmount', 'netPayable', 'paymentMethod', 'createdAt']) &&
+                         incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                         isValidPaymentRecord(incoming());
+
+        allow update: if false; // Receipts are immutable
+        allow delete: if isOwner(userId);
+      }
+    }
+  }
+}

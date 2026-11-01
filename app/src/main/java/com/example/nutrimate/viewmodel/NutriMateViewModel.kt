@@ -1,8 +1,16 @@
 package com.example.nutrimate.viewmodel
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.nutrimate.data.feast.*
+import com.example.nutrimate.data.model.MealItemEntity
+import com.example.nutrimate.data.model.PaymentRecordEntity
+import com.example.nutrimate.data.model.UserProfileEntity
+import com.example.nutrimate.data.repository.NutriMateFirestoreRepository
 import com.example.nutrimate.model.*
+import com.google.firebase.Firebase
+import com.google.firebase.auth.auth
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -11,6 +19,8 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.util.Calendar
 import java.util.UUID
+
+private const val TAG = "NutriMateVM"
 
 data class NutriMateUiState(
     val onboardingCompleted: Boolean = true,
@@ -28,7 +38,11 @@ data class NutriMateUiState(
     val scanPaidSuccess: Boolean = false,
     val scanPaymentMethod: String = "",
     val totalSpentThisMonth: Int = 2800,
-    val totalSavedFromDiscounts: Int = 680
+    val totalSavedFromDiscounts: Int = 680,
+    val isSyncingFirestore: Boolean = false,
+    val activeTradeoffProposal: TradeoffProposal? = null,
+    val showManualMealDialog: Boolean = false,
+    val undoNoticeMessage: String? = null
 ) {
     val totalTodayBudget: Int
         get() = mealSlots.sumOf { it.budget }
@@ -43,15 +57,89 @@ data class NutriMateUiState(
         get() = scanBillAmount - scanDiscountAmount
 }
 
-class NutriMateViewModel : ViewModel() {
+class NutriMateViewModel(
+    private val repository: NutriMateFirestoreRepository? = null,
+    private val currentUserId: String? = null,
+    private val gatekeeper: FeastBudgetGatekeeper = FeastBudgetGatekeeper(null)
+) : ViewModel() {
 
     private val _uiState = MutableStateFlow(NutriMateUiState())
     val uiState: StateFlow<NutriMateUiState> = _uiState.asStateFlow()
+
+    val feastState: StateFlow<FeastBudgetState> = gatekeeper.budgetState
+    val canUndo: StateFlow<Boolean> = gatekeeper.canUndo
 
     init {
         initializeMeals()
         initializeMonthlyBars()
         initializeInitialChat()
+
+        if (currentUserId != null && repository != null) {
+            connectToFirestore(currentUserId)
+        }
+    }
+
+    private fun connectToFirestore(userId: String) {
+        val repo = repository ?: return
+        viewModelScope.launch {
+            _uiState.update { it.copy(isSyncingFirestore = true) }
+            val displayName = Firebase.auth.currentUser?.displayName ?: "Dhruv"
+            repo.seedInitialDataIfEmpty(userId, displayName)
+
+            // Listen to User Profile
+            launch {
+                repo.observeUserProfile(userId).collect { profileEntity ->
+                    if (profileEntity != null) {
+                        _uiState.update { state ->
+                            state.copy(
+                                userGoals = state.userGoals.copy(
+                                    name = profileEntity.name,
+                                    phone = profileEntity.phone,
+                                    city = profileEntity.city,
+                                    age = profileEntity.age,
+                                    heightCm = profileEntity.heightCm,
+                                    weightKg = profileEntity.weightKg,
+                                    isVegetarian = profileEntity.isVegetarian,
+                                    allowLocation = profileEntity.allowLocation,
+                                    goesToGym = profileEntity.goesToGym,
+                                    isStudent = profileEntity.isStudent,
+                                    university = profileEntity.university,
+                                    monthlyBudget = profileEntity.monthlyBudget,
+                                    onMessPlan = profileEntity.onMessPlan,
+                                    dailyCalorieGoal = profileEntity.dailyCalorieGoal
+                                ),
+                                totalSpentThisMonth = profileEntity.totalSpentThisMonth,
+                                totalSavedFromDiscounts = profileEntity.totalSavedFromDiscounts,
+                                isSyncingFirestore = false
+                            )
+                        }
+                        gatekeeper.updateMonthlyBudget(profileEntity.monthlyBudget * 100L)
+                    }
+                }
+            }
+
+            // Listen to Meals subcollection
+            launch {
+                repo.observeMeals(userId).collect { mealsList ->
+                    if (mealsList.isNotEmpty()) {
+                        _uiState.update { state ->
+                            val updatedSlots = state.mealSlots.map { slot ->
+                                val matched = mealsList.find { it.id == slot.id }
+                                if (matched != null) {
+                                    slot.copy(
+                                        budget = matched.budget,
+                                        targetKcal = matched.targetKcal
+                                    )
+                                } else {
+                                    slot
+                                }
+                            }
+                            state.copy(mealSlots = updatedSlots)
+                        }
+                    }
+                }
+            }
+        }
     }
 
     private fun initializeMeals() {
@@ -61,7 +149,7 @@ class NutriMateViewModel : ViewModel() {
                 id = "breakfast",
                 name = "Breakfast",
                 emoji = "🍳",
-                budget = 40,
+                budget = 35,
                 targetKcal = 450,
                 activeHourLimit = 11,
                 options = listOf(
@@ -74,11 +162,12 @@ class NutriMateViewModel : ViewModel() {
                 id = "lunch",
                 name = "Lunch",
                 emoji = "🍛",
-                budget = 80,
+                budget = 81,
                 targetKcal = 800,
                 activeHourLimit = 16,
                 options = listOf(
                     MealOption("Star Kabab & Biriyani", "Chicken rice bowl", "৳75", 75, true, "−10%"),
+                    MealOption("Star Kabab & Biriyani", "Kacchi Biriyani (Feast Upgrade)", "৳120", 120, true, "−10%"),
                     MealOption("Hall Mess", "Rice, dal, fish", "৳60", 60),
                     MealOption("Haji Dhaba", "Veg thali", "৳70", 70),
                     MealOption("Nirala Hotel", "Beef bhuna set", "৳95", 95)
@@ -100,11 +189,11 @@ class NutriMateViewModel : ViewModel() {
                 id = "dinner",
                 name = "Dinner",
                 emoji = "🍲",
-                budget = 50,
+                budget = 51,
                 targetKcal = 800,
                 activeHourLimit = 24,
                 options = listOf(
-                    MealOption("Biryani Bhaban", "Tehari + salad", "৳55", 55, true, "−10%"),
+                    MealOption("Biryani Bhaban", "Tehari + salad", "৳51", 51, true, "−10%"),
                     MealOption("Rooftop Cafe", "Grilled chicken", "৳90", 90),
                     MealOption("Street Stall", "Egg khichuri", "৳40", 40)
                 )
@@ -138,7 +227,7 @@ class NutriMateViewModel : ViewModel() {
         val greeting = ChatMessage(
             id = UUID.randomUUID().toString(),
             sender = MessageSender.ASSISTANT,
-            content = "Hey Dhruv! Tell me what you're craving or ask anything about food. I can swap meals in your plan too."
+            content = "Hey! I'm your Feast & Nutrition Copilot. Tell me what you're craving. If it exceeds your meal allowance, I can check our unallocated reserves or offer to rearrange an upcoming Feast!"
         )
         _uiState.update { it.copy(chatMessages = listOf(greeting)) }
     }
@@ -154,6 +243,7 @@ class NutriMateViewModel : ViewModel() {
                 currentTab = AppNavTab.TODAY
             )
         }
+        syncGoalsToFirestore()
     }
 
     fun restartOnboarding() {
@@ -169,6 +259,42 @@ class NutriMateViewModel : ViewModel() {
         _uiState.update {
             val updated = transform(it.userGoals)
             it.copy(userGoals = updated)
+        }
+        gatekeeper.updateMonthlyBudget(_uiState.value.userGoals.monthlyBudget * 100L)
+        syncGoalsToFirestore()
+    }
+
+    private fun syncGoalsToFirestore() {
+        val uid = currentUserId ?: return
+        val repo = repository ?: return
+        val goals = _uiState.value.userGoals
+        viewModelScope.launch {
+            try {
+                repo.saveUserProfile(
+                    UserProfileEntity(
+                        userId = uid,
+                        name = goals.name,
+                        phone = goals.phone,
+                        city = goals.city,
+                        age = goals.age,
+                        heightCm = goals.heightCm,
+                        weightKg = goals.weightKg,
+                        isVegetarian = goals.isVegetarian,
+                        allowLocation = goals.allowLocation,
+                        goesToGym = goals.goesToGym,
+                        isStudent = goals.isStudent,
+                        university = goals.university,
+                        monthlyBudget = goals.monthlyBudget,
+                        totalSpentThisMonth = _uiState.value.totalSpentThisMonth,
+                        totalSavedFromDiscounts = _uiState.value.totalSavedFromDiscounts,
+                        unallocatedPaisa = feastState.value.unallocatedPaisa,
+                        onMessPlan = goals.onMessPlan,
+                        dailyCalorieGoal = goals.dailyCalorieGoal
+                    )
+                )
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to sync goals to Firestore", e)
+            }
         }
     }
 
@@ -188,20 +314,177 @@ class NutriMateViewModel : ViewModel() {
         }
     }
 
-    fun selectMealOption(slotIndex: Int, optionIndex: Int) {
-        _uiState.update { state ->
-            val updatedSlots = state.mealSlots.toMutableList()
-            if (slotIndex in updatedSlots.indices) {
-                val slot = updatedSlots[slotIndex]
-                if (optionIndex in slot.options.indices) {
-                    val opt = slot.options[optionIndex]
-                    updatedSlots[slotIndex] = slot.copy(
-                        selectedOptionIndex = optionIndex,
-                        budget = opt.priceNum
+    /**
+     * Request an upgrade or custom meal through the deterministic gatekeeper.
+     */
+    fun requestMealUpgrade(
+        mealId: String,
+        newPricePaisa: Long,
+        itemName: String,
+        placeName: String,
+        kcal: Int
+    ) {
+        val slot = _uiState.value.mealSlots.find { it.id == mealId } ?: return
+        val proposal = gatekeeper.check(
+            mealId = mealId,
+            mealName = slot.name,
+            requestedPricePaisa = newPricePaisa,
+            itemName = itemName,
+            placeName = placeName,
+            kcal = kcal
+        )
+
+        if (proposal != null) {
+            if (proposal.shortfallPaisa == 0L) {
+                // Directly affordable: apply immediately
+                viewModelScope.launch {
+                    gatekeeper.applyTradeoff(proposal, slot, currentUserId, repository)
+                    updateSlotOptionDirectly(mealId, itemName, placeName, (newPricePaisa / 100).toInt(), kcal)
+                }
+            } else {
+                // Requires shortfall funding: present trade-off dialog to user
+                _uiState.update { it.copy(activeTradeoffProposal = proposal) }
+            }
+        }
+    }
+
+    fun confirmTradeoffProposal() {
+        val proposal = _uiState.value.activeTradeoffProposal ?: return
+        val slot = _uiState.value.mealSlots.find { it.id == proposal.mealId } ?: return
+
+        viewModelScope.launch {
+            val success = gatekeeper.applyTradeoff(proposal, slot, currentUserId, repository)
+            if (success) {
+                updateSlotOptionDirectly(
+                    slotId = proposal.mealId,
+                    itemName = proposal.requestedItemName,
+                    placeName = proposal.requestedPlaceName,
+                    priceTaka = (proposal.requestedPricePaisa / 100).toInt(),
+                    kcal = proposal.requestedKcal
+                )
+                _uiState.update {
+                    it.copy(
+                        activeTradeoffProposal = null,
+                        undoNoticeMessage = "Upgraded to ${proposal.requestedItemName}! Feast cancelled and remainder saved."
                     )
                 }
             }
+        }
+    }
+
+    fun declineTradeoffProposal() {
+        _uiState.update { it.copy(activeTradeoffProposal = null) }
+    }
+
+    fun undoLastTradeoff() {
+        viewModelScope.launch {
+            val restoredSlot = gatekeeper.undoLastAction(currentUserId, repository)
+            if (restoredSlot != null) {
+                _uiState.update { state ->
+                    val updatedSlots = state.mealSlots.map { if (it.id == restoredSlot.id) restoredSlot else it }
+                    state.copy(
+                        mealSlots = updatedSlots,
+                        undoNoticeMessage = "Trade-off undone! Meal and Feast budget restored."
+                    )
+                }
+            }
+        }
+    }
+
+    fun dismissUndoNotice() {
+        _uiState.update { it.copy(undoNoticeMessage = null) }
+    }
+
+    fun openManualMealDialog() {
+        _uiState.update { it.copy(showManualMealDialog = true) }
+    }
+
+    fun dismissManualMealDialog() {
+        _uiState.update { it.copy(showManualMealDialog = false) }
+    }
+
+    fun logManualMeal(
+        restaurant: String,
+        dish: String,
+        spentTaka: Int,
+        kcal: Int,
+        slotId: String
+    ) {
+        val slot = _uiState.value.mealSlots.find { it.id == slotId } ?: return
+        viewModelScope.launch {
+            val uid = currentUserId ?: "dhruv_dev"
+            val success = gatekeeper.logManualMealAndSubmitToCommunity(
+                userId = uid,
+                restaurantName = restaurant,
+                dishName = dish,
+                spentTaka = spentTaka,
+                calories = kcal,
+                mealSlotId = slotId,
+                mealSlotName = slot.name,
+                emoji = slot.emoji,
+                repository = repository
+            )
+            if (success) {
+                updateSlotOptionDirectly(slotId, dish, restaurant, spentTaka, kcal)
+                _uiState.update {
+                    it.copy(
+                        showManualMealDialog = false,
+                        undoNoticeMessage = "Logged $dish (৳$spentTaka)! Submitted to community staging."
+                    )
+                }
+            }
+        }
+    }
+
+    private fun updateSlotOptionDirectly(
+        slotId: String,
+        itemName: String,
+        placeName: String,
+        priceTaka: Int,
+        kcal: Int
+    ) {
+        _uiState.update { state ->
+            val updatedSlots = state.mealSlots.map { slot ->
+                if (slot.id == slotId) {
+                    val newOpt = MealOption(placeName, itemName, "৳$priceTaka", priceTaka)
+                    val newOpts = listOf(newOpt) + slot.options.filter { it.title != itemName }
+                    slot.copy(
+                        budget = priceTaka,
+                        targetKcal = kcal,
+                        options = newOpts,
+                        selectedOptionIndex = 0
+                    )
+                } else slot
+            }
             state.copy(mealSlots = updatedSlots)
+        }
+    }
+
+    fun selectMealOption(slotIndex: Int, optionIndex: Int) {
+        val slot = _uiState.value.mealSlots.getOrNull(slotIndex) ?: return
+        val opt = slot.options.getOrNull(optionIndex) ?: return
+
+        // Check if item exceeds current allowance
+        val currentAllowancePaisa = feastState.value.mealAllowancesPaisa[slot.id] ?: (slot.budget * 100L)
+        val requestedPricePaisa = opt.priceNum * 100L
+
+        if (requestedPricePaisa > currentAllowancePaisa) {
+            requestMealUpgrade(
+                mealId = slot.id,
+                newPricePaisa = requestedPricePaisa,
+                itemName = opt.title,
+                placeName = opt.place,
+                kcal = slot.targetKcal
+            )
+        } else {
+            _uiState.update { state ->
+                val updatedSlots = state.mealSlots.toMutableList()
+                updatedSlots[slotIndex] = slot.copy(
+                    selectedOptionIndex = optionIndex,
+                    budget = opt.priceNum
+                )
+                state.copy(mealSlots = updatedSlots)
+            }
         }
     }
 
@@ -225,72 +508,74 @@ class NutriMateViewModel : ViewModel() {
         val lower = userText.lowercase()
 
         viewModelScope.launch {
-            if (lower.contains("biriyani") || lower.contains("biryani") || lower.contains("swap") || lower.contains("craving")) {
-                delay(600)
+            if (lower.contains("biriyani") || lower.contains("biryani") || lower.contains("kacchi") || lower.contains("upgrade")) {
+                // Worked Example: Kacchi Biriyani X = 12,000 paisa (Tk 120) for lunch (allowance ~80.88)
+                val pricePaisa = 12_000L
+                val lunchSlot = _uiState.value.mealSlots.find { it.id == "lunch" }
+                val currentAllowance = feastState.value.mealAllowancesPaisa["lunch"] ?: 8_088L
+
+                delay(500)
                 val checkCall = ChatMessage(
                     id = UUID.randomUUID().toString(),
                     sender = MessageSender.FUNCTION_CALL,
-                    content = "check(meal=\"lunch\", item=\"biriyani\") → feasible · ৳75 ≤ ৳80, 790 kcal"
+                    content = "check_feasibility(meal=\"lunch\", item=\"Kacchi Biriyani\", price=12000 paisa) → shortfall=3912 paisa, candidate_feast=\"Friday Feast #1\""
                 )
                 _uiState.update { it.copy(chatMessages = it.chatMessages + checkCall) }
 
-                delay(900)
-                val reply = ChatMessage(
-                    id = UUID.randomUUID().toString(),
-                    sender = MessageSender.ASSISTANT,
-                    content = "Biriyani fits your lunch budget and calories! Updating your plan to Star Kabab Chicken Biriyani…"
+                delay(700)
+                val proposal = gatekeeper.check(
+                    mealId = "lunch",
+                    mealName = "Lunch",
+                    requestedPricePaisa = pricePaisa,
+                    itemName = "Kacchi Biriyani",
+                    placeName = "Star Kabab & Biriyani",
+                    kcal = 850
                 )
-                // Update lunch slot option 0
-                _uiState.update { state ->
-                    val updatedSlots = state.mealSlots.map { slot ->
-                        if (slot.id == "lunch") {
-                            val newOptions = slot.options.toMutableList()
-                            newOptions[0] = MealOption("Star Kabab & Biriyani", "Chicken biriyani", "৳75", 75, true, "−10%")
-                            slot.copy(options = newOptions, targetKcal = 790, selectedOptionIndex = 0)
-                        } else slot
+
+                if (proposal != null) {
+                    val reply = ChatMessage(
+                        id = UUID.randomUUID().toString(),
+                        sender = MessageSender.ASSISTANT,
+                        content = proposal.plainEnglishExplanation + " Tap below or confirm on screen to apply the rearrangement."
+                    )
+                    _uiState.update {
+                        it.copy(
+                            chatMessages = it.chatMessages + reply,
+                            activeTradeoffProposal = proposal
+                        )
                     }
-                    state.copy(chatMessages = state.chatMessages + reply, mealSlots = updatedSlots)
                 }
 
-                delay(700)
-                val updateCall = ChatMessage(
-                    id = UUID.randomUUID().toString(),
-                    sender = MessageSender.FUNCTION_CALL,
-                    content = "update(day=\"today\", meal=\"lunch\", item=\"biriyani\") → monthly table updated ✓"
-                )
-                _uiState.update { it.copy(chatMessages = it.chatMessages + updateCall) }
-
-            } else if (lower.contains("cheap") || lower.contains("save") || lower.contains("money")) {
-                delay(700)
-                val reply = ChatMessage(
-                    id = UUID.randomUUID().toString(),
-                    sender = MessageSender.ASSISTANT,
-                    content = "Swapping dinner to Street Stall egg khichuri saves ৳15 and keeps you right at 780 kcal. I've updated your dinner slot!"
-                )
-                _uiState.update { state ->
-                    val updatedSlots = state.mealSlots.map { slot ->
-                        if (slot.id == "dinner") {
-                            slot.copy(selectedOptionIndex = 2, budget = 40)
-                        } else slot
-                    }
-                    state.copy(chatMessages = state.chatMessages + reply, mealSlots = updatedSlots)
+            } else if (lower.contains("cancel feast") || lower.contains("feast")) {
+                delay(600)
+                val activeFeast = feastState.value.feasts.firstOrNull { !it.isCancelled }
+                val msg = if (activeFeast != null) {
+                    "You have ${activeFeast.title} (${FeastEngine.formatTaka(activeFeast.budgetPaisa)}) scheduled. You can reserve it for a big weekend treat, or sacrifice it anytime to unlock luxury weekday cravings!"
+                } else {
+                    "All planned feasts this month have been repurposed to fund upgraded meals. Remaining buffer: ${FeastEngine.formatTaka(feastState.value.unallocatedPaisa)}."
                 }
-
-            } else if (lower.contains("protein") || lower.contains("shake") || lower.contains("gym")) {
-                delay(800)
                 val reply = ChatMessage(
                     id = UUID.randomUUID().toString(),
                     sender = MessageSender.ASSISTANT,
-                    content = "A commercial whey protein shake costs around ৳90 per serving. Eggs and yellow lentils (dal) provide 10g protein for only ৳12 in Dhaka, making them 7.5x more cost-efficient on your ৳6,000 student budget!"
+                    content = msg
+                )
+                _uiState.update { it.copy(chatMessages = it.chatMessages + reply) }
+
+            } else if (lower.contains("cheap") || lower.contains("save")) {
+                delay(600)
+                val reply = ChatMessage(
+                    id = UUID.randomUUID().toString(),
+                    sender = MessageSender.ASSISTANT,
+                    content = "Swapping dinner to Street Stall egg khichuri saves ৳15.00 and protects your upcoming Friday Feast!"
                 )
                 _uiState.update { it.copy(chatMessages = it.chatMessages + reply) }
 
             } else {
-                delay(700)
+                delay(600)
                 val reply = ChatMessage(
                     id = UUID.randomUUID().toString(),
                     sender = MessageSender.ASSISTANT,
-                    content = "I reviewed your daily food intake. Today's meals provide optimal macros for your ${uiState.value.userGoals.dailyCalorieGoal} kcal target while staying within your daily budget limit of ৳${uiState.value.totalTodayBudget}."
+                    content = "Your monthly pool is ${FeastEngine.formatTaka(feastState.value.poolPaisa)}. All ledger rules hold strictly. Let me know if you want to test a meal swap or log an expense!"
                 )
                 _uiState.update { it.copy(chatMessages = it.chatMessages + reply) }
             }
@@ -330,6 +615,30 @@ class NutriMateViewModel : ViewModel() {
                 totalSpentThisMonth = it.totalSpentThisMonth + payable,
                 totalSavedFromDiscounts = it.totalSavedFromDiscounts + saved
             )
+        }
+
+        currentUserId?.let { uid ->
+            repository?.let { repo ->
+                viewModelScope.launch {
+                    try {
+                        val trxId = "TXN_${UUID.randomUUID().toString().take(8).uppercase()}"
+                        repo.recordPayment(
+                            uid,
+                            PaymentRecordEntity(
+                                id = "pay_${System.currentTimeMillis()}",
+                                trxId = trxId,
+                                vendorName = "Star Kabab & Biriyani",
+                                billAmount = _uiState.value.scanBillAmount,
+                                discountAmount = saved,
+                                netPayable = payable,
+                                paymentMethod = method
+                            )
+                        )
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to record payment in Firestore", e)
+                    }
+                }
+            }
         }
     }
 
