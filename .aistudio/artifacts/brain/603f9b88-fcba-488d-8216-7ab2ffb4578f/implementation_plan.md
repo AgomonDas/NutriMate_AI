@@ -1,162 +1,155 @@
-# Feast Reserve Budget System & Deterministic Gatekeeper Architecture
+# NutriMate Chat AI: Gemini Function Calling & Feast Reserve Engine
 
-Implement the Feast Budget formulation, deterministic gatekeeper validation functions (`check`, `propose_tradeoff`, `apply_update`, `undo`), a 4-tier Firestore data architecture, manual meal/expense logging with crowdsourced staging, and a rich interactive Compose UI showing live budget buckets and trade-off proposals.
+Implement an AI meal planner chat assistant powered by Gemini (`gemini-3.8-flash`) with function calling. The AI assists budget-constrained students in Bangladesh to adjust their meal plans, evaluate upgrades through a deterministic gatekeeper, navigate feast trade-offs, and answer nutrition questions—without ever editing the database directly or performing untrusted financial arithmetic.
 
 ---
 
 ### User Review & Critical Decisions
 
-- **Integer Paisa Currency (Confirmed)**: All monetary values in the engine and Firestore are strictly stored and computed in integer paisa ($1\text{ Tk} = 100\text{ paisa}$) to eliminate floating-point drift. Display values are formatted as $\text{৳}(paisa / 100.0)$.
-- **Feast Allocation & Cancellation (Confirmed)**: Monthly pool $P = \text{Monthly Budget} - \text{Fixed Costs}$. Feasts are set at $f = 2 \times b_0$. When a meal shortfall $s = X - A$ exceeds unallocated funds $U$, the nearest feast is consumed; remainder $r = F - s$ is credited to $U$ and the feast is cancelled atomically upon user confirmation.
-- **Strict Gatekeeper Invariant (Confirmed)**: The AI (Gemini via Firebase AI Logic) acts strictly as a conversational planner that invokes deterministic gatekeeper tools (`check_feasibility`, `request_meal_rearrangement`). It never mutates database documents directly.
-- **Multi-Table Firestore Architecture**:
-  1. `central_foods`: Pre-populated verified dishes with kcal, standard pricing, partner restuarant flags.
-  2. `partner_restaurants`: Curated list of partner outlets with discount percentages and location details.
-  3. `users/{userId}`: Profile, pool $P$, fixed costs, unallocated balance $U$, and active feasts list.
-  4. `users/{userId}/meals`: User's personalized meal slots.
-  5. `users/{userId}/payments`: Transaction ledger with `trxId`, merchant, method (bKash/Nagad), timestamps.
-  6. `community_food_submissions`: Developer staging table for crowdsourced user-entered custom meals.
+> [!IMPORTANT]
+> The following decisions were confirmed based on your preferences:
+
+- **Gemini Model & Function Calling**: Powered by `gemini-3.8-flash` via Firebase AI Logic, registered with 5 client-side deterministic tools (`search_menu`, `check`, `find_funding`, `update`, `get_alternatives`).
+- **Tool-Call Trace Display**: Monospace tool execution badges in the chat stream showing real-time step-by-step tool invocation (e.g., `search_menu("biriyani") → 1 match`, `check("lunch", "kacchi_biriyani") → over_budget by Tk 39.12`, `find_funding(...) → cancel Friday feast`).
+- **Confirmation UX**: When an `update` tool invocation returns `needs_confirmation`, the chat UI renders an inline actionable card with **Confirm** and **Decline** buttons alongside the assistant's plain-English explanation.
+- **Backend Isolation**: AI never modifies tables directly; state is mutated exclusively through signed tokens passed to the `update()` gatekeeper.
 
 ---
 
-## 1. Overview & Core Concept
+### 1. Overview & Core Concept
 
-NutriMate AI helps budget-conscious students balance daily nutrition with celebratory splurges ("Feasts"). Rather than treating daily budgets as rigid silos, upcoming feasts act as flexible financial buffers. If a student craves a premium meal (e.g. Kacchi Biriyani for ৳120 on an ৳80.88 lunch allowance), the gatekeeper calculates the exact trade-off: use unallocated reserves first, or propose cancelling an upcoming feast (e.g. Friday feast). The AI presents the plain-language trade-off, requires explicit student confirmation, executes atomic ledger updates, and allows one-tap undo.
+NutriMate AI assists students managing tight monthly food budgets (default Tk 7,000 / 700,000 paisa) across 4 daily meal slots (Breakfast 20%, Lunch 40%, Snacks 15%, Dinner 25%) and 2 planned weekend feasts (Tk 466.66 each).
+
+The chat copilot categorizes incoming messages into two distinct pathways:
+1. **Plan-Changing Requests** (*"I want biriyani for lunch"*, *"Find me a cheaper dinner"*):
+   - The model must use tools and cannot invent prices or edit data directly.
+   - It performs `search_menu`, `check`, `find_funding`, and `update`.
+   - If an item exceeds today's slot allowance, it finds funding (unallocated buffer $U$ first, or sacrifice of nearest planned feast).
+   - If a feast is affected, it requests user consent before applying.
+2. **Food & Nutrition Questions** (*"Is a protein shake worth it for gym?"*, *"How much protein in 2 eggs?"*):
+   - The model answers directly in conversational text with zero tool calls and zero state mutations.
+
+---
+
+### 2. User Experience & Visual Design
+
+#### Key User Flows
 
 ```
-┌────────────────────────────────────────────────────────────────────────┐
-│                        MONTHLY FOOD POOL (P)                           │
-│                     (e.g., 700,000 paisa = ৳7,000)                     │
-└───────────────────────────────────┬────────────────────────────────────┘
-                                    │
-          ┌─────────────────────────┼────────────────────────┐
-          ▼                         ▼                        ▼
-┌──────────────────┐      ┌──────────────────┐     ┌──────────────────┐
-│   DAILY MEALS    │      │  PLANNED FEASTS  │     │   UNALLOCATED    │
-│  sum(allowances) │  +   │   sum(budgets)   │  +  │   BALANCE (U)    │ <= P
-│ breakfast (20%)  │      │  Feast 1 (৳466)  │     │  Buffer money /  │
-│ lunch (40%)      │      │  Feast 2 (৳466)  │     │  Feast remainder │
-│ snack (15%)      │      │                  │     │                  │
-│ dinner (25%)     │      │                  │     │                  │
-└──────────────────┘      └──────────────────┘     └──────────────────┘
+[ User sends message: "I want kacchi biriyani for lunch" ]
+                         │
+                         ▼
+┌────────────────────────────────────────────────────────┐
+│ 1. AI executes search_menu("biriyani", "lunch")        │
+│    └─ [Badge]: 🔍 search_menu("biriyani") → 1 item     │
+├────────────────────────────────────────────────────────┤
+│ 2. AI executes check("lunch", "kacchi_biriyani")       │
+│    └─ [Badge]: ⚖️ check(lunch, item=5) → Over by ৳39.12│
+├────────────────────────────────────────────────────────┤
+│ 3. AI executes find_funding("lunch", "kacchi_biriyani")│
+│    └─ [Badge]: 💡 find_funding → Cancel Friday Feast   │
+├────────────────────────────────────────────────────────┤
+│ 4. AI executes update(token="token_feast_cancel_...")  │
+│    └─ [Badge]: 🔒 update(...) → needs_confirmation     │
+└────────────────────────────────────────────────────────┘
+                         │
+                         ▼
+┌────────────────────────────────────────────────────────┐
+│ Assistant Message:                                     │
+│ "Kacchi biriyani is ৳120 and your lunch allowance is   │
+│ ৳80.88. I can cover the gap by cancelling Friday's     │
+│ feast. You'd lose that feast. Tap Confirm to apply."  │
+│                                                        │
+│ [ ✅ Confirm Trade-off ]   [ ❌ Decline / Alternatives] │
+└────────────────────────────────────────────────────────┘
 ```
 
----
-
-## 2. User Experience & Visual Design
-
-### Key User Flows
-
-1. **Bucket Dashboard (Feast & Budget Overview)**:
-   - Header displays Monthly Pool $P$, Base Daily Budget $b_0$, Active Daily Budget $b$, and Unallocated Balance $U$.
-   - Interactive Feast Cards showing upcoming feast dates (e.g., "Friday Feast #1: ৳466.66 [Active]").
-   - Real-time ledger health badge: `sum(allowances) + sum(feasts) <= P` (Verified).
-
-2. **Meal Upgrade & Trade-off Proposal**:
-   - Tapping an upgrade or chatting with AI ("I want Kacchi Biriyani for lunch") triggers the gatekeeper.
-   - If price $X \le A$: Instant green badge, meal updated.
-   - If price $X > A$: The Gatekeeper calculates shortfall $s = X - A$. An interactive Trade-Off Card appears:
-     - Shortfall breakdown: $\text{Shortfall } s = \text{৳}39.12$.
-     - Source: "Cancelling Friday Feast (৳466.66). Remainder ৳427.54 moves to Unallocated Balance $U$."
-     - Action buttons: **Accept & Cancel Feast** vs **Decline (Show Alternatives)**.
-   - On accept: Feast is marked cancelled, allowance updated to $X$, meal saved, and an **Undo** banner appears.
-
-3. **Manual Expense & Custom Meal Submission**:
-   - Quick "Log Expense / Add Meal" FAB and dialog.
-   - Student enters: Restaurant name, Dish name, Spent amount, Calories, and meal category.
-   - Immediate effect: User's daily meal and ledger are updated locally and synced to `/users/{userId}/meals`.
-   - Staging effect: The submission is simultaneously saved to `community_food_submissions` for developer review and inclusion into the central food catalog.
-
-4. **Visual Theme**:
-   - Maintains NutriMate's deep midnight glassmorphic styling (`#0B1020`, frosted cards, neon mint `#7CFFB2` for budget health, amber `#FFD25A` for feast status, and alert red for cancellations).
+#### Visual Identity & Chat Elements
+- **Monospace Tool Badges**: Compact dark pills (`#090E1A` background, emerald border `#34D98A`, typography `JetBrains Mono / Monospace` 11sp) displaying each function call name, input arguments, and result preview.
+- **Interactive In-Chat Action Cards**: Embedded directly inside assistant bubbles when `needs_confirmation` is returned, allowing immediate 1-tap confirmation or cancellation.
+- **Quick Suggestion Chips**: Horizontal scroll list above the input field:
+  - 🍛 *I want biriyani for lunch* (Triggers feast trade-off flow)
+  - 🥪 *Swap snack to fruit cart* (Triggers instant in-budget swap)
+  - 💸 *Something cheaper for dinner* (Triggers `get_alternatives`)
+  - 💪 *Is protein shake worth it?* (Triggers pure nutritional advice)
 
 ---
 
-## 3. Key Product Decisions & Trade-Offs
+### 3. Key Product Decisions & Trade-Offs
 
-- **Deterministic Kotlin Gatekeeper Layer**:
-  - *Chosen Approach*: Implement `FeastBudgetGatekeeper` in Kotlin. The AI engine passes tool calls (`check(meal, item, price)`) to the gatekeeper, which performs exact integer math and Firestore atomic writes.
-  - *Why*: Large Language Models can hallucinate mathematical balances and currency arithmetic. Offloading all validation, ledger inequality checks, and transactional updates to deterministic Kotlin code guarantees 100% ledger safety and reduces AI token consumption by over 70%.
-- **All-or-Nothing Feast Cancellation Default**:
-  - *Chosen Approach*: Consuming a feast cancels it completely and dumps the full remainder $r = F - s$ into unallocated balance $U$.
-  - *Why*: Reduces cognitive load on students compared to micro-fractional feasts (e.g. having a ৳34.10 "feast" remaining).
-- **Dual-Write on Custom Meal Logging**:
-  - *Chosen Approach*: Write user's custom meal to their own private subcollection immediately, while writing a sanitized copy to `community_food_submissions`.
-  - *Why*: Zero latency for the user, while building an authentic crowd-sourced catalog of university mess and street stall menus.
+#### Decision 1: Token-Efficient Compact System Context
+- **Chosen Approach**: Inject only a 120-token dynamic context snippet into the Gemini prompt:
+  ```
+  Today: Sunday, Nov 1.
+  Budget Pool: Tk 7,000. Unallocated: Tk 0.
+  Allowances: Breakfast Tk 40.44, Lunch Tk 80.88, Snacks Tk 30.33, Dinner Tk 50.55.
+  Next Feast: Friday Feast #1 (Tk 466.66, active).
+  User: Student, non-vegetarian.
+  ```
+- **Why**: Eliminates 3,600+ tokens of full-month calendar dump per turn, speeding up responses by 5x and staying well within latency budgets.
+
+#### Decision 2: Signed Ephemeral Tokens for Write Protection
+- **Chosen Approach**: `update()` requires a cryptographic/UUID token generated by `check()` or `find_funding()`.
+- **Why**: Prevents hallucinated price updates or unsolicited mutations; the model cannot make changes without the backend validating the dry-run state first.
 
 ---
 
-## 4. Technical Architecture & Data Strategy
-
-### System Architecture Diagram
+### 4. Technical Architecture & Data Strategy
 
 ```
-┌────────────────────────────────────────────────────────────────────────┐
-│                        Jetpack Compose UI                              │
-│  ┌───────────────────────┐ ┌────────────────┐ ┌─────────────────────┐  │
-│  │ Feast Bucket Overview │ │ Trade-off Card │ │ Manual Log Dialog   │  │
-│  └───────────▲───────────┘ └───────▲────────┘ └──────────▲──────────┘  │
-└──────────────┼─────────────────────┼─────────────────────┼─────────────┘
-               │                     │                     │
-┌──────────────┴─────────────────────┴─────────────────────┴─────────────┐
-│                          NutriMateViewModel                            │
-│           (StateFlow<FeastUiState>, Undo History Stack)                │
-└──────────────────────────────▲─────────────────────────────────────────┘
-                               │
-┌──────────────────────────────┴─────────────────────────────────────────┐
-│              Deterministic FeastBudgetGatekeeper                       │
-│  - Integer paisa arithmetic (P, b0, b, f, U)                           │
-│  - checkFeasibility(mealId, newPricePaisa, newKcal)                   │
-│  - evaluateTradeoff(mealId, shortfallPaisa)                           │
-│  - applyRearrangement(tradeoffPlan) -> Atomic Write                    │
-│  - rollbackLastAction() -> Undo Support                                │
-└──────────────────────────────▲─────────────────────────────────────────┘
-                               │
-┌──────────────────────────────┴─────────────────────────────────────────┐
-│               Firebase Firestore (Enterprise Applet DB)                │
-│  ├── central_foods/           (read-only catalog for suggestions)      │
-│  ├── partner_restaurants/     (partner discounts & metadata)           │
-│  ├── community_submissions/   (crowdsourced dev staging table)         │
-│  └── users/{userId}/                                                   │
-│      ├── (profile & feast buckets)                                     │
-│      ├── meals/               (user's active meal slots)               │
-│      └── payments/            (transaction history)                    │
-└────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│                    Jetpack Compose Chat UI                      │
+│             (ChatSheet.kt with Tool Trace Badges)               │
+└──────────────┬───────────────────────────────────▲──────────────┘
+               │ (User message)                    │ (Stream / Badges)
+               ▼                                   │
+┌─────────────────────────────────────────────────────────────────┐
+│                    NutriMateChatViewModel                       │
+│    - Maintains message history & active proposal tokens         │
+│    - Orchestrates multi-turn tool execution loop (max 6 steps)  │
+└──────────────┬───────────────────────────────────▲──────────────┘
+               │ Function Calls                    │ Tool Results
+               ▼                                   │
+┌─────────────────────────────────────────────────────────────────┐
+│                  NutriMateAiToolsGatekeeper                     │
+│  ├─ search_menu(query, slot, max_price_tk)                      │
+│  ├─ check(slot, item_id)                                        │
+│  ├─ find_funding(slot, item_id)                                 │
+│  ├─ update(token)                                               │
+│  └─ get_alternatives(slot, max_price_tk)                        │
+└──────────────┬───────────────────────────────────▲──────────────┘
+               │ Read / Validate                   │ Update State
+               ▼                                   │
+┌─────────────────────────────────────────────────────────────────┐
+│            FeastEngine & NutriMateFirestoreRepository           │
+│    - Integer paisa arithmetic (৳1 = 100 paisa)                  │
+│    - Strict Ledger Invariant: sum(allowances) + feasts <= P     │
+│    - Dual-write to user meal slots & community staging table    │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-### Firestore Schema Details
-
-1. `central_foods/{foodId}`:
-   `{ id, name, restaurant, pricePaisa, calories, isPartner, discountTag, mealSlot }`
-2. `partner_restaurants/{partnerId}`:
-   `{ id, name, discountRate, cuisine, campusArea }`
-3. `community_food_submissions/{submissionId}`:
-   `{ id, submittedBy, restaurant, dishName, pricePaisa, calories, mealCategory, status: 'pending', createdAt }`
-4. `users/{userId}`:
-   `{ userId, monthlyBudgetPaisa, fixedCostsPaisa, poolPaisa, unallocatedPaisa, baseDailyBudgetPaisa, dailyBudgetPaisa, feasts: [ { id, date, budgetPaisa, isCancelled, title } ] }`
-5. `users/{userId}/meals/{mealId}`:
-   `{ id, name, emoji, allowancePaisa, targetKcal, selectedPlace, selectedTitle, selectedPricePaisa }`
-6. `users/{userId}/payments/{paymentId}`:
-   `{ id, trxId, vendorName, billAmountPaisa, discountPaisa, netPaidPaisa, paymentMethod, createdAt }`
+#### Tool Definitions
+1. `search_menu(query: String, slot: String, max_price_tk: Int?)`
+   - Returns up to 5 items: `{item_id, name, place, price_tk, kcal}`.
+2. `check(slot: String, item_id: String)`
+   - Read-only dry run. Returns `{ok: true, price_tk, slot_budget_tk, kcal, check_token}` or `{ok: false, reason: "over_budget", short_by_tk}`.
+3. `find_funding(slot: String, item_id: String)`
+   - Evaluates buffer $U$ then upcoming planned feast $F$. Returns list of options with plain-English summary and signed funding token.
+4. `update(token: String)`
+   - Only write tool. Validates token; returns `{status: "applied" | "needs_confirmation" | "rejected", explanation: String}`.
+5. `get_alternatives(slot: String, max_price_tk: Int?)`
+   - Returns 2–3 cheaper options that fit strictly within `slot_budget_tk`.
 
 ---
 
-## 5. Implementation Phases & Verification Plan
+### Implementation Phases
 
-### Phase 1: Core Mathematical Engine & Models
-- Implement `FeastEngine.kt` with pure functions for pool calculations, feast sizing, shortfall funding resolution, and ledger verification.
-- Unit test worked example with exact integer paisa arithmetic ($P = 700,000$, $b_0 = 23,333$, $f = 46,666$, $b = 20,222$, shortfall $s = 3,912$).
-
-### Phase 2: Firestore Gatekeeper & Repository
-- Update `firestore.rules` and `firebase-blueprint.json` to secure `central_foods`, `partner_restaurants`, and `community_food_submissions`.
-- Implement `FeastBudgetGatekeeper.kt` with atomic state updates and undo snapshot stack.
-
-### Phase 3: Interactive UI & Feast Demo Screen
-- Build `FeastDashboardCard` displaying budget buckets, active/cancelled feasts, and real-time ledger rule status.
-- Build `TradeoffProposalDialog` showing before/after states, shortfall funding source, and Confirm/Decline options.
-- Build `ManualMealEntryDialog` supporting custom restaurant/meal logging with dual-write to user meals and community submissions.
-- Wire into `MainActivity` with navigation tabs and full undo support.
-
-### Phase 4: Verification & Build
-- Verify build with `compile_applet`.
-- Verify zero-regression against auth and security rules gates.
+- **Phase 1: Tool Gatekeeper & In-Memory Catalog Engine**
+  - Implement `NutriMateAiToolsGatekeeper.kt` containing the 5 specified tools, token generator, and deterministic state transitions.
+- **Phase 2: Gemini Tool Calling Integration (Firebase AI Logic)**
+  - Configure `gemini-3.8-flash` with Function Declarations for all 5 tools.
+  - Implement the multi-step execution loop in `NutriMateChatViewModel` handling function call dispatching and tool responses.
+- **Phase 3: Chat UI with Trace Badges & Trade-off Confirmation**
+  - Update `ChatSheet.kt` to render monospace badges, tool arguments, return values, and interactive trade-off confirmation dialogs.
+- **Phase 4: Verification & Automated Tests**
+  - Write Robolectric / unit tests verifying both standard in-budget swaps and over-budget feast cancellations with tool trace history.

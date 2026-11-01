@@ -10,6 +10,9 @@ coilCompose = "2.7.0"
 materialIconsExtended = "1.7.8"
 junit = "4.13.2"
 firebaseBom = "33.10.0"
+firebaseAi = "17.15.0"
+firebaseAppCheckRecaptcha = "19.2.0"
+firebaseAppCheckDebug = "19.4.0"
 credentials = "1.5.0-rc01"
 googleid = "1.1.1"
 googleServices = "4.4.2"
@@ -32,6 +35,9 @@ junit = { group = "junit", name = "junit", version.ref = "junit" }
 firebase-bom = { group = "com.google.firebase", name = "firebase-bom", version.ref = "firebaseBom" }
 firebase-firestore = { group = "com.google.firebase", name = "firebase-firestore" }
 firebase-auth = { group = "com.google.firebase", name = "firebase-auth" }
+firebase-ai = { group = "com.google.firebase", name = "firebase-ai", version.ref = "firebaseAi" }
+firebase-appcheck-recaptcha = { group = "com.google.firebase", name = "firebase-appcheck-recaptcha", version.ref = "firebaseAppCheckRecaptcha" }
+firebase-appcheck-debug = { group = "com.google.firebase", name = "firebase-appcheck-debug", version.ref = "firebaseAppCheckDebug" }
 androidx-credentials = { group = "androidx.credentials", name = "credentials", version.ref = "credentials" }
 androidx-credentials-play-services = { group = "androidx.credentials", name = "credentials-play-services-auth", version.ref = "credentials" }
 googleid = { group = "com.google.android.libraries.identity.googleid", name = "googleid", version.ref = "googleid" }

@@ -59,7 +59,12 @@ data class ChatMessage(
     val id: String,
     val sender: MessageSender,
     val content: String,
-    val timestamp: Long = System.currentTimeMillis()
+    val timestamp: Long = System.currentTimeMillis(),
+    val toolName: String? = null,
+    val toolArgs: String? = null,
+    val toolResult: String? = null,
+    val tradeoffToken: String? = null,
+    val isPendingConfirmation: Boolean = false
 )
 
 data class MonthlyDaySpend(

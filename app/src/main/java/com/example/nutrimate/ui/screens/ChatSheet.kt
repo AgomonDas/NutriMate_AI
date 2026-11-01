@@ -118,16 +118,20 @@ fun ChatSheet(
                 contentPadding = PaddingValues(vertical = 8.dp)
             ) {
                 items(uiState.chatMessages, key = { it.id }) { msg ->
-                    ChatBubble(message = msg)
+                    ChatBubble(
+                        message = msg,
+                        onConfirmTradeoff = { token -> viewModel.confirmInChatTradeoff(token) },
+                        onDeclineTradeoff = { token -> viewModel.declineInChatTradeoff(token) }
+                    )
                 }
             }
 
             // Quick suggestion chips
             val quickChips = listOf(
                 "🍛 I want biriyani for lunch",
-                "💪 Protein shake?",
+                "🥪 Swap snack to fruit cart",
                 "💸 Cheaper dinner",
-                "🥗 High protein snacks"
+                "💪 Is protein shake worth it?"
             )
             Row(
                 modifier = Modifier
@@ -170,7 +174,7 @@ fun ChatSheet(
                     onValueChange = { inputText = it },
                     placeholder = {
                         Text(
-                            "Message… e.g. I want biriyani",
+                            "Message… e.g. I want biriyani for lunch",
                             color = Color.White.copy(alpha = 0.5f),
                             fontSize = 14.sp
                         )
@@ -219,7 +223,11 @@ fun ChatSheet(
 }
 
 @Composable
-fun ChatBubble(message: ChatMessage) {
+fun ChatBubble(
+    message: ChatMessage,
+    onConfirmTradeoff: (String) -> Unit = {},
+    onDeclineTradeoff: (String) -> Unit = {}
+) {
     when (message.sender) {
         MessageSender.USER -> {
             Row(
@@ -251,19 +259,88 @@ fun ChatBubble(message: ChatMessage) {
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.Start
             ) {
-                GlassBox(
-                    modifier = Modifier.widthIn(max = 290.dp),
-                    cornerRadius = 18.dp,
-                    backgroundColor = Color.White.copy(alpha = 0.14f),
-                    borderColor = Color.White.copy(alpha = 0.3f)
-                ) {
-                    Text(
-                        text = message.content,
-                        color = Color.White,
-                        fontSize = 14.sp,
-                        lineHeight = 20.sp,
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 11.dp)
-                    )
+                Column(modifier = Modifier.widthIn(max = 310.dp)) {
+                    GlassBox(
+                        modifier = Modifier.fillMaxWidth(),
+                        cornerRadius = 18.dp,
+                        backgroundColor = Color.White.copy(alpha = 0.14f),
+                        borderColor = Color.White.copy(alpha = 0.3f)
+                    ) {
+                        Text(
+                            text = message.content,
+                            color = Color.White,
+                            fontSize = 14.sp,
+                            lineHeight = 20.sp,
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 11.dp)
+                        )
+                    }
+
+                    // Inline Trade-off Confirmation Action Box
+                    if (message.isPendingConfirmation && message.tradeoffToken != null) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(16.dp))
+                                .background(Color(0xFF14223A))
+                                .border(1.dp, TagYellow.copy(alpha = 0.6f), RoundedCornerShape(16.dp))
+                                .padding(12.dp)
+                        ) {
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text(
+                                    text = "⚠️ Feast Sacrifice Required",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = TagYellow
+                                )
+                                Text(
+                                    text = "To fund this upgrade, an upcoming planned feast will be cancelled. Remainder returns to your savings.",
+                                    fontSize = 11.sp,
+                                    color = Color.White.copy(alpha = 0.8f),
+                                    lineHeight = 15.sp
+                                )
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Button(
+                                        onClick = { onConfirmTradeoff(message.tradeoffToken) },
+                                        colors = ButtonDefaults.buttonColors(containerColor = MintAccent),
+                                        shape = RoundedCornerShape(12.dp),
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .height(38.dp)
+                                            .testTag("inchat_confirm_btn"),
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                                    ) {
+                                        Text(
+                                            text = "Confirm",
+                                            color = MintAccentDark,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 12.sp
+                                        )
+                                    }
+
+                                    OutlinedButton(
+                                        onClick = { onDeclineTradeoff(message.tradeoffToken) },
+                                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+                                        shape = RoundedCornerShape(12.dp),
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .height(38.dp)
+                                            .testTag("inchat_decline_btn"),
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                                    ) {
+                                        Text(
+                                            text = "Decline",
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -273,21 +350,67 @@ fun ChatBubble(message: ChatMessage) {
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.Start
             ) {
+                val toolIcon = when (message.toolName) {
+                    "search_menu" -> "🔍"
+                    "check" -> "⚖️"
+                    "find_funding" -> "💡"
+                    "update" -> "🔒"
+                    "gatekeeper.confirm" -> "🔓"
+                    "get_alternatives" -> "🥗"
+                    else -> "⚙️"
+                }
+
                 Box(
                     modifier = Modifier
-                        .widthIn(max = 310.dp)
+                        .widthIn(max = 330.dp)
                         .clip(RoundedCornerShape(12.dp))
-                        .background(Color.Black.copy(alpha = 0.55f))
-                        .border(1.dp, MintAccent.copy(alpha = 0.6f), RoundedCornerShape(12.dp))
+                        .background(Color(0xFF070E1A))
+                        .border(1.dp, MintAccent.copy(alpha = 0.55f), RoundedCornerShape(12.dp))
                         .padding(horizontal = 12.dp, vertical = 8.dp)
                 ) {
-                    Text(
-                        text = message.content,
-                        color = MintAccentGlow,
-                        fontSize = 12.sp,
-                        fontFamily = FontFamily.Monospace,
-                        lineHeight = 16.sp
-                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text(text = toolIcon, fontSize = 12.sp)
+                            Text(
+                                text = message.toolName ?: "tool_call",
+                                color = MintAccent,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = FontFamily.Monospace
+                            )
+                        }
+
+                        if (message.toolArgs != null) {
+                            Text(
+                                text = "args: (${message.toolArgs})",
+                                color = Color.White.copy(alpha = 0.7f),
+                                fontSize = 11.sp,
+                                fontFamily = FontFamily.Monospace,
+                                lineHeight = 14.sp
+                            )
+                        }
+
+                        if (message.toolResult != null) {
+                            Text(
+                                text = "→ ${message.toolResult}",
+                                color = MintAccentGlow,
+                                fontSize = 11.sp,
+                                fontFamily = FontFamily.Monospace,
+                                lineHeight = 14.sp
+                            )
+                        } else {
+                            Text(
+                                text = message.content,
+                                color = MintAccentGlow,
+                                fontSize = 11.sp,
+                                fontFamily = FontFamily.Monospace,
+                                lineHeight = 14.sp
+                            )
+                        }
+                    }
                 }
             }
         }

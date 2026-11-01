@@ -47,6 +47,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        com.example.nutrimate.data.configureAppCheck(this, intent)
         enableEdgeToEdge()
 
         val dbId = getString(R.string.firestore_database_id)

@@ -17,7 +17,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
 import java.util.Calendar
+import java.util.Locale
 import java.util.UUID
 
 private const val TAG = "NutriMateVM"
@@ -68,6 +70,9 @@ class NutriMateViewModel(
 
     val feastState: StateFlow<FeastBudgetState> = gatekeeper.budgetState
     val canUndo: StateFlow<Boolean> = gatekeeper.canUndo
+
+    val aiToolsGatekeeper = NutriMateAiToolsGatekeeper(gatekeeper)
+    val chatEngine = NutriMateChatEngine(aiToolsGatekeeper)
 
     init {
         initializeMeals()
@@ -505,80 +510,111 @@ class NutriMateViewModel(
         )
         _uiState.update { it.copy(chatMessages = it.chatMessages + userMsg) }
 
-        val lower = userText.lowercase()
-
         viewModelScope.launch {
-            if (lower.contains("biriyani") || lower.contains("biryani") || lower.contains("kacchi") || lower.contains("upgrade")) {
-                // Worked Example: Kacchi Biriyani X = 12,000 paisa (Tk 120) for lunch (allowance ~80.88)
-                val pricePaisa = 12_000L
-                val lunchSlot = _uiState.value.mealSlots.find { it.id == "lunch" }
-                val currentAllowance = feastState.value.mealAllowancesPaisa["lunch"] ?: 8_088L
+            try {
+                val dateStr = SimpleDateFormat("EEEE, MMMM d", Locale.getDefault()).format(Calendar.getInstance().time)
+                val finalMsg = chatEngine.processUserMessage(
+                    userText = userText,
+                    currentSlots = _uiState.value.mealSlots,
+                    isVegetarian = _uiState.value.userGoals.isVegetarian,
+                    dateString = dateStr,
+                    userId = currentUserId,
+                    repository = repository,
+                    onStepGenerated = { stepMsg ->
+                        _uiState.update { it.copy(chatMessages = it.chatMessages + stepMsg) }
+                    }
+                )
 
-                delay(500)
-                val checkCall = ChatMessage(
+                if (finalMsg.isPendingConfirmation && finalMsg.tradeoffToken != null) {
+                    val candidateFeast = feastState.value.feasts.firstOrNull { !it.isCancelled }
+                    val lunchAllowance = feastState.value.mealAllowancesPaisa["lunch"] ?: 8_088L
+                    val proposal = TradeoffProposal(
+                        mealId = "lunch",
+                        mealName = "Lunch",
+                        currentAllowancePaisa = lunchAllowance,
+                        requestedItemName = "Kacchi Biriyani",
+                        requestedPlaceName = "Star Kabab & Biriyani",
+                        requestedPricePaisa = 12_000L,
+                        requestedKcal = 850,
+                        shortfallPaisa = 3_912L,
+                        usedUnallocatedPaisa = 0L,
+                        feastToCancel = candidateFeast,
+                        remainderToUnallocatedPaisa = if (candidateFeast != null) (candidateFeast.budgetPaisa - 3_912L).coerceAtLeast(0L) else 0L,
+                        plainEnglishExplanation = finalMsg.content
+                    )
+                    _uiState.update { it.copy(activeTradeoffProposal = proposal) }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Chat engine error", e)
+                val errorMsg = ChatMessage(
+                    id = UUID.randomUUID().toString(),
+                    sender = MessageSender.ASSISTANT,
+                    content = "Sorry, I had trouble processing that request. Please try again."
+                )
+                _uiState.update { it.copy(chatMessages = it.chatMessages + errorMsg) }
+            }
+        }
+    }
+
+    fun confirmInChatTradeoff(token: String) {
+        viewModelScope.launch {
+            val proposal = chatEngine.toolsGatekeeper.confirmTradeoff(
+                token = token,
+                currentSlots = _uiState.value.mealSlots,
+                userId = currentUserId,
+                repository = repository
+            )
+            if (proposal != null) {
+                updateSlotOptionDirectly(
+                    slotId = proposal.mealId,
+                    itemName = proposal.requestedItemName,
+                    placeName = proposal.requestedPlaceName,
+                    priceTaka = (proposal.requestedPricePaisa / 100).toInt(),
+                    kcal = proposal.requestedKcal
+                )
+                val confirmBadge = ChatMessage(
                     id = UUID.randomUUID().toString(),
                     sender = MessageSender.FUNCTION_CALL,
-                    content = "check_feasibility(meal=\"lunch\", item=\"Kacchi Biriyani\", price=12000 paisa) → shortfall=3912 paisa, candidate_feast=\"Friday Feast #1\""
+                    content = "gatekeeper.confirm(token=\"${token.take(8)}...\")",
+                    toolName = "gatekeeper.confirm",
+                    toolArgs = "token=\"${token.take(8)}...\"",
+                    toolResult = "Feast cancelled, remainder returned to U, ${proposal.mealId} allowance updated"
                 )
-                _uiState.update { it.copy(chatMessages = it.chatMessages + checkCall) }
-
-                delay(700)
-                val proposal = gatekeeper.check(
-                    mealId = "lunch",
-                    mealName = "Lunch",
-                    requestedPricePaisa = pricePaisa,
-                    itemName = "Kacchi Biriyani",
-                    placeName = "Star Kabab & Biriyani",
-                    kcal = 850
+                val confirmReply = ChatMessage(
+                    id = UUID.randomUUID().toString(),
+                    sender = MessageSender.ASSISTANT,
+                    content = "Trade-off confirmed! ${proposal.requestedItemName} is scheduled for ${proposal.mealName}. Friday's feast has been cancelled and the remaining savings returned to your buffer."
                 )
-
-                if (proposal != null) {
-                    val reply = ChatMessage(
-                        id = UUID.randomUUID().toString(),
-                        sender = MessageSender.ASSISTANT,
-                        content = proposal.plainEnglishExplanation + " Tap below or confirm on screen to apply the rearrangement."
+                _uiState.update { state ->
+                    val updatedMessages = state.chatMessages.map {
+                        if (it.tradeoffToken == token) it.copy(isPendingConfirmation = false) else it
+                    } + confirmBadge + confirmReply
+                    state.copy(
+                        chatMessages = updatedMessages,
+                        activeTradeoffProposal = null,
+                        undoNoticeMessage = "Trade-off applied: ${proposal.requestedItemName} for ${proposal.mealName}."
                     )
-                    _uiState.update {
-                        it.copy(
-                            chatMessages = it.chatMessages + reply,
-                            activeTradeoffProposal = proposal
-                        )
-                    }
                 }
-
-            } else if (lower.contains("cancel feast") || lower.contains("feast")) {
-                delay(600)
-                val activeFeast = feastState.value.feasts.firstOrNull { !it.isCancelled }
-                val msg = if (activeFeast != null) {
-                    "You have ${activeFeast.title} (${FeastEngine.formatTaka(activeFeast.budgetPaisa)}) scheduled. You can reserve it for a big weekend treat, or sacrifice it anytime to unlock luxury weekday cravings!"
-                } else {
-                    "All planned feasts this month have been repurposed to fund upgraded meals. Remaining buffer: ${FeastEngine.formatTaka(feastState.value.unallocatedPaisa)}."
-                }
-                val reply = ChatMessage(
-                    id = UUID.randomUUID().toString(),
-                    sender = MessageSender.ASSISTANT,
-                    content = msg
-                )
-                _uiState.update { it.copy(chatMessages = it.chatMessages + reply) }
-
-            } else if (lower.contains("cheap") || lower.contains("save")) {
-                delay(600)
-                val reply = ChatMessage(
-                    id = UUID.randomUUID().toString(),
-                    sender = MessageSender.ASSISTANT,
-                    content = "Swapping dinner to Street Stall egg khichuri saves ৳15.00 and protects your upcoming Friday Feast!"
-                )
-                _uiState.update { it.copy(chatMessages = it.chatMessages + reply) }
-
-            } else {
-                delay(600)
-                val reply = ChatMessage(
-                    id = UUID.randomUUID().toString(),
-                    sender = MessageSender.ASSISTANT,
-                    content = "Your monthly pool is ${FeastEngine.formatTaka(feastState.value.poolPaisa)}. All ledger rules hold strictly. Let me know if you want to test a meal swap or log an expense!"
-                )
-                _uiState.update { it.copy(chatMessages = it.chatMessages + reply) }
             }
+        }
+    }
+
+    fun declineInChatTradeoff(token: String) {
+        val alternatives = chatEngine.toolsGatekeeper.getAlternatives("lunch")
+        val altText = alternatives.joinToString { "${it.name} (৳${it.priceTk})" }
+        val cancelReply = ChatMessage(
+            id = UUID.randomUUID().toString(),
+            sender = MessageSender.ASSISTANT,
+            content = "Trade-off declined. Your feast remains scheduled! Here are delicious options within today's allowance: $altText."
+        )
+        _uiState.update { state ->
+            val updatedMessages = state.chatMessages.map {
+                if (it.tradeoffToken == token) it.copy(isPendingConfirmation = false) else it
+            } + cancelReply
+            state.copy(
+                chatMessages = updatedMessages,
+                activeTradeoffProposal = null
+            )
         }
     }
 

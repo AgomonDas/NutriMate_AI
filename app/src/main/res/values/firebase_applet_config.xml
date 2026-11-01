@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="utf-8" standalone="no"?>
 <resources>
     <string name="firestore_database_id" translatable="false">ai-studio-android-nutrimat-603f9b88-fcba-488d-8216-7ab2ffb4578f</string>
+    <string name="recaptcha_site_key" translatable="false">6LdjuAsuAAAAANSDLXrtu_XEcstIfcLvvK0xZQJH</string>
 </resources>
