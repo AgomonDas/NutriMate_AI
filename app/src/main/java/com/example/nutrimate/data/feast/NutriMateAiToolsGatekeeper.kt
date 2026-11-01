@@ -102,6 +102,8 @@ class NutriMateAiToolsGatekeeper(
 
     private val tokenStore = mutableMapOf<String, StoredToken>()
 
+    fun getStoredToken(token: String): StoredToken? = tokenStore[token]
+
     /**
      * Tool 1: search_menu(query, slot, max_price_tk)
      * Returns up to 5 matching items {item_id, name, place, price_tk, kcal}.

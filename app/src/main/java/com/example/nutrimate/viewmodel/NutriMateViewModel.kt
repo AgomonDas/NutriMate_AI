@@ -11,6 +11,8 @@ import com.example.nutrimate.data.repository.NutriMateFirestoreRepository
 import com.example.nutrimate.model.*
 import com.google.firebase.Firebase
 import com.google.firebase.auth.auth
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -526,30 +528,45 @@ class NutriMateViewModel(
                 )
 
                 if (finalMsg.isPendingConfirmation && finalMsg.tradeoffToken != null) {
-                    val candidateFeast = feastState.value.feasts.firstOrNull { !it.isCancelled }
-                    val lunchAllowance = feastState.value.mealAllowancesPaisa["lunch"] ?: 8_088L
+                    val stored = chatEngine.toolsGatekeeper.getStoredToken(finalMsg.tradeoffToken)
+                    val candidateFeast = stored?.feastToCancel ?: feastState.value.feasts.firstOrNull { !it.isCancelled }
+                    val slotId = stored?.slotId ?: "lunch"
+                    val slot = _uiState.value.mealSlots.find { it.id == slotId }
+                    val slotAllowance = feastState.value.mealAllowancesPaisa[slotId] ?: 8_088L
                     val proposal = TradeoffProposal(
-                        mealId = "lunch",
-                        mealName = "Lunch",
-                        currentAllowancePaisa = lunchAllowance,
-                        requestedItemName = "Kacchi Biriyani",
-                        requestedPlaceName = "Star Kabab & Biriyani",
-                        requestedPricePaisa = 12_000L,
-                        requestedKcal = 850,
-                        shortfallPaisa = 3_912L,
-                        usedUnallocatedPaisa = 0L,
+                        mealId = slotId,
+                        mealName = slot?.name ?: slotId.replaceFirstChar { it.uppercase() },
+                        currentAllowancePaisa = slotAllowance,
+                        requestedItemName = stored?.item?.name ?: "Kacchi Biriyani",
+                        requestedPlaceName = stored?.item?.place ?: "Star Kabab & Biriyani",
+                        requestedPricePaisa = stored?.pricePaisa ?: 12_000L,
+                        requestedKcal = stored?.item?.kcal ?: 850,
+                        shortfallPaisa = stored?.shortfallPaisa ?: 3_912L,
+                        usedUnallocatedPaisa = stored?.unallocatedUsedPaisa ?: 0L,
                         feastToCancel = candidateFeast,
-                        remainderToUnallocatedPaisa = if (candidateFeast != null) (candidateFeast.budgetPaisa - 3_912L).coerceAtLeast(0L) else 0L,
+                        remainderToUnallocatedPaisa = if (candidateFeast != null) {
+                            (candidateFeast.budgetPaisa - (stored?.shortfallPaisa ?: 3_912L)).coerceAtLeast(0L)
+                        } else 0L,
                         plainEnglishExplanation = finalMsg.content
                     )
                     _uiState.update { it.copy(activeTradeoffProposal = proposal) }
                 }
+            } catch (e: TimeoutCancellationException) {
+                Log.e(TAG, "AI generation timed out", e)
+                val errorMsg = ChatMessage(
+                    id = UUID.randomUUID().toString(),
+                    sender = MessageSender.ASSISTANT,
+                    content = "Gemini request timed out after 60 seconds. Please check your network and try again."
+                )
+                _uiState.update { it.copy(chatMessages = it.chatMessages + errorMsg) }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.e(TAG, "Chat engine error", e)
                 val errorMsg = ChatMessage(
                     id = UUID.randomUUID().toString(),
                     sender = MessageSender.ASSISTANT,
-                    content = "Sorry, I had trouble processing that request. Please try again."
+                    content = "Gemini API error: ${e.localizedMessage ?: e.javaClass.simpleName}"
                 )
                 _uiState.update { it.copy(chatMessages = it.chatMessages + errorMsg) }
             }

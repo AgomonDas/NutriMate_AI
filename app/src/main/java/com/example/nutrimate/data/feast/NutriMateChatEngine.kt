@@ -1,128 +1,142 @@
 package com.example.nutrimate.data.feast
 
 import android.util.Log
-import com.example.nutrimate.data.model.MealItemEntity
 import com.example.nutrimate.data.repository.NutriMateFirestoreRepository
 import com.example.nutrimate.model.ChatMessage
 import com.example.nutrimate.model.MealSlot
 import com.example.nutrimate.model.MessageSender
 import com.google.firebase.Firebase
+import com.google.firebase.ai.Chat
+import com.google.firebase.ai.GenerativeModel
 import com.google.firebase.ai.ai
+import com.google.firebase.ai.type.Content
 import com.google.firebase.ai.type.FunctionDeclaration
 import com.google.firebase.ai.type.FunctionResponsePart
 import com.google.firebase.ai.type.Schema
 import com.google.firebase.ai.type.Tool
 import com.google.firebase.ai.type.content
 import com.google.firebase.ai.type.generationConfig
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 import java.util.UUID
 
 private const val TAG = "NutriMateChatEngine"
 
-sealed interface ChatEngineResult {
-    data class Success(val messages: List<ChatMessage>) : ChatEngineResult
-    data class Error(val message: String) : ChatEngineResult
-}
-
 class NutriMateChatEngine(
     val toolsGatekeeper: NutriMateAiToolsGatekeeper
 ) {
-    private val model by lazy {
-        try {
-            val searchMenuDecl = FunctionDeclaration(
-                name = "search_menu",
-                description = "Searches the student menu catalog for meals matching query, meal slot, or budget.",
-                parameters = mapOf(
-                    "query" to Schema.string("Food item name or keyword (e.g. biriyani, paratha, egg)"),
-                    "slot" to Schema.string("Meal slot: breakfast, lunch, snacks, or dinner"),
-                    "max_price_tk" to Schema.integer("Maximum price in Taka")
-                ),
-                optionalParameters = listOf("slot", "max_price_tk")
-            )
+    private val model: GenerativeModel by lazy {
+        val searchMenuDecl = FunctionDeclaration(
+            name = "search_menu",
+            description = "Searches the student food catalog for meals matching query, meal slot, or budget.",
+            parameters = mapOf(
+                "query" to Schema.string("Food item name or keyword (e.g. biriyani, paratha, egg, khichuri)"),
+                "slot" to Schema.string("Meal slot: breakfast, lunch, snacks, or dinner"),
+                "max_price_tk" to Schema.integer("Maximum price in Taka")
+            ),
+            optionalParameters = listOf("slot", "max_price_tk")
+        )
 
-            val checkDecl = FunctionDeclaration(
-                name = "check",
-                description = "Read-only dry run checking if a meal fits today's slot budget allowance.",
-                parameters = mapOf(
-                    "slot" to Schema.string("Meal slot: breakfast, lunch, snacks, or dinner"),
-                    "item_id" to Schema.string("Item ID from search_menu")
-                )
+        val checkDecl = FunctionDeclaration(
+            name = "check",
+            description = "Read-only dry run checking if a meal fits today's slot budget allowance.",
+            parameters = mapOf(
+                "slot" to Schema.string("Meal slot: breakfast, lunch, snacks, or dinner"),
+                "item_id" to Schema.string("Item ID from search_menu")
             )
+        )
 
-            val findFundingDecl = FunctionDeclaration(
-                name = "find_funding",
-                description = "Finds funding options when an item exceeds budget (unallocated balance or feast cancellation).",
-                parameters = mapOf(
-                    "slot" to Schema.string("Meal slot: breakfast, lunch, snacks, or dinner"),
-                    "item_id" to Schema.string("Item ID from search_menu")
-                )
+        val findFundingDecl = FunctionDeclaration(
+            name = "find_funding",
+            description = "Finds funding options when an item exceeds budget (unallocated balance or feast cancellation).",
+            parameters = mapOf(
+                "slot" to Schema.string("Meal slot: breakfast, lunch, snacks, or dinner"),
+                "item_id" to Schema.string("Item ID from search_menu")
             )
+        )
 
-            val updateDecl = FunctionDeclaration(
-                name = "update",
-                description = "The only write tool. Mutates plan using signed token from check or find_funding.",
-                parameters = mapOf(
-                    "token" to Schema.string("Signed authorization token from check or find_funding")
-                )
+        val updateDecl = FunctionDeclaration(
+            name = "update",
+            description = "The only write tool. Mutates plan using signed token from check or find_funding.",
+            parameters = mapOf(
+                "token" to Schema.string("Signed authorization token from check or find_funding")
             )
+        )
 
-            val getAlternativesDecl = FunctionDeclaration(
-                name = "get_alternatives",
-                description = "Returns 2-3 cheaper alternative meals fitting the slot budget.",
-                parameters = mapOf(
-                    "slot" to Schema.string("Meal slot: breakfast, lunch, snacks, or dinner"),
-                    "max_price_tk" to Schema.integer("Maximum price in Taka")
-                ),
-                optionalParameters = listOf("max_price_tk")
+        val getAlternativesDecl = FunctionDeclaration(
+            name = "get_alternatives",
+            description = "Returns 2-3 cheaper alternative meals fitting the slot budget.",
+            parameters = mapOf(
+                "slot" to Schema.string("Meal slot: breakfast, lunch, snacks, or dinner"),
+                "max_price_tk" to Schema.integer("Maximum price in Taka")
+            ),
+            optionalParameters = listOf("max_price_tk")
+        )
+
+        val tools = listOf(
+            Tool.functionDeclarations(
+                listOf(searchMenuDecl, checkDecl, findFundingDecl, updateDecl, getAlternativesDecl)
             )
+        )
 
-            val tools = listOf(
-                Tool.functionDeclarations(
-                    listOf(searchMenuDecl, checkDecl, findFundingDecl, updateDecl, getAlternativesDecl)
-                )
+        val sysInstruction = content {
+            text(
+                """
+                You are NutriMate AI, a meal planner for students on a tight budget in Bangladesh.
+                The user has a monthly plan: 4 meals a day (breakfast, lunch, snack, dinner) and planned weekend feasts.
+                The user can change this plan by talking or ask normal food/nutrition questions.
+                
+                TWO TYPES OF REQUEST:
+                1. Plan-changing ("swap my lunch to biriyani", "something cheaper for dinner"):
+                   You MUST use tools and change data ONLY through them:
+                   - search_menu(query, slot, max_price_tk)
+                   - check(slot, item_id)
+                   - If check.ok is true: call update(check_token). Once update returns applied, explain in 1 simple sentence.
+                   - If check.ok is false (over_budget): do NOT refuse. Call find_funding(slot, item_id). Choose the option with smallest sacrifice (free unallocated balance first, then feast cancellation). Then call update(option.token).
+                   - If update returns needs_confirmation: explain the trade-off in 1-2 plain sentences ("I can pay for this by cancelling Friday's feast. You'd lose the feast.") and ask the user to confirm using the app's Confirm button. STOP and do NOT call update again!
+                   - If user declines or item not found: call get_alternatives(slot, max_price_tk) and offer them.
+                2. Food questions ("is a protein shake worth it?", "healthy snacks"):
+                   Answer directly in plain text. Do NOT call tools. No data changes. Keep answer realistic for a student in Bangladesh using Taka (৳).
+                
+                CRITICAL CONSTRAINTS:
+                - Never do budget arithmetic yourself.
+                - Never invent prices, item IDs, or tokens.
+                - Never confirm a feast trade-off yourself.
+                - Never claim a change happened unless update returned "applied".
+                - Keep all answers short, encouraging, and clear (1-2 sentences).
+                """.trimIndent()
             )
-
-            val sysInstruction = content {
-                text(
-                    """
-                    You are NutriMate AI, a meal planner for students on a tight budget in Bangladesh.
-                    The user has a monthly plan: 4 meals a day (breakfast, lunch, snack, dinner) and planned weekend feasts.
-                    You let the user change this plan by talking and answer normal food/nutrition questions.
-                    
-                    RULES:
-                    1. Plan-changing requests: Use tools and change data ONLY through them.
-                    2. Food/nutrition questions: Answer directly in text. No tools, no data changes.
-                    3. Never edit data directly. Never invent prices or item IDs. Never do budget arithmetic yourself.
-                    4. Flow for plan changes:
-                       - search_menu for the item
-                       - check(slot, item_id)
-                       - if ok: update(check_token), tell user in one sentence
-                       - if over_budget: call find_funding(slot, item_id), pick the option with smallest sacrifice, call update(option_token)
-                       - if update returns needs_confirmation: explain the trade-off in 1-2 plain sentences ("I can pay for this by cancelling Friday's feast. You'd lose the feast.") and ask the user to confirm. Stop. Do not call update again.
-                    5. Style: Short, friendly, plain language. Use Tk (৳). 1-2 sentences per reply.
-                    """.trimIndent()
-                )
-            }
-
-            Firebase.ai.generativeModel(
-                modelName = "gemini-3.8-flash",
-                generationConfig = generationConfig {
-                    temperature = 0.2f
-                },
-                tools = tools,
-                systemInstruction = sysInstruction
-            )
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to initialize Firebase AI GenerativeModel", e)
-            null
         }
+
+        Firebase.ai.generativeModel(
+            modelName = "gemini-3.8-flash",
+            generationConfig = generationConfig {
+                temperature = 0.2f
+            },
+            tools = tools,
+            systemInstruction = sysInstruction
+        )
+    }
+
+    private var chatSession: Chat? = null
+
+    /**
+     * Resets the multi-turn chat session if requested.
+     */
+    fun resetChatSession() {
+        chatSession = null
     }
 
     /**
-     * Executes chat interaction for user input.
-     * Evaluates whether request is food question or plan change, dispatches tools,
-     * and streams monospace tool execution badges into the chat trace.
+     * Executes real Gemini inference via Firebase AI Logic and handles the
+     * Gemini Function Calling loop deterministically with gatekeeper tools.
      */
     suspend fun processUserMessage(
         userText: String,
@@ -133,230 +147,229 @@ class NutriMateChatEngine(
         repository: NutriMateFirestoreRepository?,
         onStepGenerated: (ChatMessage) -> Unit
     ): ChatMessage {
-        val lower = userText.trim().lowercase()
+        val chat = chatSession ?: model.startChat().also { chatSession = it }
 
-        // 1. Check if user is asking a nutrition/food question (Type 2: direct answer, no tools)
-        val isFoodQuestion = isNutritionQuestion(lower)
-        if (isFoodQuestion) {
-            val answer = answerNutritionQuestion(lower, isVegetarian)
+        var pendingTradeoffToken: String? = null
+        var promptContent = content("user") { text(userText) }
+
+        var iterations = 0
+        val maxIterations = 6
+        var lastAssistantText: String? = null
+
+        try {
+            while (iterations < maxIterations) {
+                iterations++
+                val response = withTimeout(60_000L) {
+                    chat.sendMessage(promptContent)
+                }
+
+                val functionCalls = response.functionCalls
+                if (functionCalls.isEmpty()) {
+                    lastAssistantText = response.text
+                    break
+                }
+
+                val functionResponseParts = mutableListOf<FunctionResponsePart>()
+
+                for (call in functionCalls) {
+                    val callName = call.name
+                    val args = call.args
+
+                    when (callName) {
+                        "search_menu" -> {
+                            val query = args["query"]?.jsonPrimitive?.contentOrNull ?: ""
+                            val slot = args["slot"]?.jsonPrimitive?.contentOrNull ?: "lunch"
+                            val maxPrice = args["max_price_tk"]?.jsonPrimitive?.intOrNull
+
+                            val results = toolsGatekeeper.searchMenu(query, slot, maxPrice)
+
+                            val badge = ChatMessage(
+                                id = UUID.randomUUID().toString(),
+                                sender = MessageSender.FUNCTION_CALL,
+                                content = "search_menu(query=\"$query\", slot=\"$slot\")",
+                                toolName = "search_menu",
+                                toolArgs = "query=\"$query\", slot=\"$slot\"",
+                                toolResult = if (results.isNotEmpty()) {
+                                    "Found ${results.size} items: ${results.first().name} (৳${results.first().priceTk})"
+                                } else {
+                                    "No items found"
+                                }
+                            )
+                            onStepGenerated(badge)
+
+                            val responseJson = buildJsonObject {
+                                put("items", buildJsonArray {
+                                    for (item in results) {
+                                        add(buildJsonObject {
+                                            put("item_id", item.itemId)
+                                            put("name", item.name)
+                                            put("place", item.place)
+                                            put("price_tk", item.priceTk)
+                                            put("kcal", item.kcal)
+                                        })
+                                    }
+                                })
+                            }
+                            functionResponseParts.add(FunctionResponsePart("search_menu", responseJson))
+                        }
+
+                        "check" -> {
+                            val slot = args["slot"]?.jsonPrimitive?.contentOrNull ?: "lunch"
+                            val itemId = args["item_id"]?.jsonPrimitive?.contentOrNull ?: ""
+
+                            val checkRes = toolsGatekeeper.check(slot, itemId)
+
+                            val badge = ChatMessage(
+                                id = UUID.randomUUID().toString(),
+                                sender = MessageSender.FUNCTION_CALL,
+                                content = "check(slot=\"$slot\", item_id=\"$itemId\")",
+                                toolName = "check",
+                                toolArgs = "slot=\"$slot\", item_id=\"$itemId\"",
+                                toolResult = if (checkRes.ok) {
+                                    "ok: true, price=৳${checkRes.priceTk}, allowance=৳${checkRes.slotBudgetTk}"
+                                } else {
+                                    "ok: false, reason=over_budget, short_by=৳${String.format("%.2f", checkRes.shortByTk ?: 0.0)}"
+                                }
+                            )
+                            onStepGenerated(badge)
+
+                            val responseJson = buildJsonObject {
+                                put("ok", checkRes.ok)
+                                put("price_tk", checkRes.priceTk)
+                                put("slot_budget_tk", checkRes.slotBudgetTk)
+                                put("kcal", checkRes.kcal)
+                                checkRes.checkToken?.let { put("check_token", it) }
+                                checkRes.reason?.let { put("reason", it) }
+                                checkRes.shortByTk?.let { put("short_by_tk", it) }
+                            }
+                            functionResponseParts.add(FunctionResponsePart("check", responseJson))
+                        }
+
+                        "find_funding" -> {
+                            val slot = args["slot"]?.jsonPrimitive?.contentOrNull ?: "lunch"
+                            val itemId = args["item_id"]?.jsonPrimitive?.contentOrNull ?: ""
+
+                            val fundingRes = toolsGatekeeper.findFunding(slot, itemId)
+
+                            val badge = ChatMessage(
+                                id = UUID.randomUUID().toString(),
+                                sender = MessageSender.FUNCTION_CALL,
+                                content = "find_funding(slot=\"$slot\", item_id=\"$itemId\")",
+                                toolName = "find_funding",
+                                toolArgs = "slot=\"$slot\", item_id=\"$itemId\"",
+                                toolResult = if (fundingRes.options.isNotEmpty()) {
+                                    "option: ${fundingRes.options.first().summary}"
+                                } else {
+                                    "no funding available"
+                                }
+                            )
+                            onStepGenerated(badge)
+
+                            val responseJson = buildJsonObject {
+                                put("options", buildJsonArray {
+                                    for (opt in fundingRes.options) {
+                                        add(buildJsonObject {
+                                            put("option_id", opt.optionId)
+                                            put("summary", opt.summary)
+                                            put("shortfall_tk", opt.shortfallTk)
+                                            opt.feastTitle?.let { put("feast_title", it) }
+                                            put("token", opt.token)
+                                        })
+                                    }
+                                })
+                            }
+                            functionResponseParts.add(FunctionResponsePart("find_funding", responseJson))
+                        }
+
+                        "update" -> {
+                            val token = args["token"]?.jsonPrimitive?.contentOrNull ?: ""
+
+                            val updateRes = toolsGatekeeper.update(token, currentSlots, userId, repository)
+
+                            val badge = ChatMessage(
+                                id = UUID.randomUUID().toString(),
+                                sender = MessageSender.FUNCTION_CALL,
+                                content = "update(token=\"${token.take(8)}...\")",
+                                toolName = "update",
+                                toolArgs = "token=\"${token.take(8)}...\"",
+                                toolResult = "status: ${updateRes.status}"
+                            )
+                            onStepGenerated(badge)
+
+                            if (updateRes.status == "needs_confirmation") {
+                                pendingTradeoffToken = token
+                            }
+
+                            val responseJson = buildJsonObject {
+                                put("status", updateRes.status)
+                                updateRes.message?.let { put("message", it) }
+                                updateRes.reason?.let { put("reason", it) }
+                            }
+                            functionResponseParts.add(FunctionResponsePart("update", responseJson))
+                        }
+
+                        "get_alternatives" -> {
+                            val slot = args["slot"]?.jsonPrimitive?.contentOrNull ?: "lunch"
+                            val maxPrice = args["max_price_tk"]?.jsonPrimitive?.intOrNull
+
+                            val alts = toolsGatekeeper.getAlternatives(slot, maxPrice)
+
+                            val badge = ChatMessage(
+                                id = UUID.randomUUID().toString(),
+                                sender = MessageSender.FUNCTION_CALL,
+                                content = "get_alternatives(slot=\"$slot\")",
+                                toolName = "get_alternatives",
+                                toolArgs = "slot=\"$slot\"",
+                                toolResult = "${alts.size} alternatives: ${alts.joinToString { "${it.name} (৳${it.priceTk})" }}"
+                            )
+                            onStepGenerated(badge)
+
+                            val responseJson = buildJsonObject {
+                                put("alternatives", buildJsonArray {
+                                    for (alt in alts) {
+                                        add(buildJsonObject {
+                                            put("item_id", alt.itemId)
+                                            put("name", alt.name)
+                                            put("place", alt.place)
+                                            put("price_tk", alt.priceTk)
+                                            put("kcal", alt.kcal)
+                                        })
+                                    }
+                                })
+                            }
+                            functionResponseParts.add(FunctionResponsePart("get_alternatives", responseJson))
+                        }
+                    }
+                }
+
+                // Send function execution outputs back to Gemini
+                promptContent = Content(
+                    role = "user",
+                    parts = functionResponseParts
+                )
+            }
+
+            val finalContent = lastAssistantText?.takeIf { it.isNotBlank() } ?: "I've reviewed your meal plan."
             val assistantMsg = ChatMessage(
                 id = UUID.randomUUID().toString(),
                 sender = MessageSender.ASSISTANT,
-                content = answer
+                content = finalContent,
+                tradeoffToken = pendingTradeoffToken,
+                isPendingConfirmation = pendingTradeoffToken != null
             )
             onStepGenerated(assistantMsg)
             return assistantMsg
-        }
 
-        // 2. Plan-changing request (Type 1: deterministic tool execution with tool-call trace)
-        return executePlanChangeFlow(
-            userText = userText,
-            currentSlots = currentSlots,
-            isVegetarian = isVegetarian,
-            dateString = dateString,
-            userId = userId,
-            repository = repository,
-            onStepGenerated = onStepGenerated
-        )
-    }
-
-    private fun isNutritionQuestion(text: String): Boolean {
-        val triggers = listOf(
-            "protein shake", "is it worth", "how much protein", "calorie", "calories in",
-            "gym diet", "healthy snack", "good for gym", "benefits of", "nutrition in",
-            "vitamins", "boiled egg nutrition", "creatine", "whey"
-        )
-        return triggers.any { text.contains(it) } && !text.contains("swap") && !text.contains("change") && !text.contains("want")
-    }
-
-    private fun answerNutritionQuestion(text: String, isVegetarian: Boolean): String {
-        return when {
-            text.contains("protein shake") || text.contains("whey") -> {
-                "Protein shakes are helpful if you lift heavy and can't meet your protein goal from canteen food. However, on a student budget, 2 boiled eggs (৳30) or roasted peanuts (৳15) offer excellent high-protein value for much less Tk."
-            }
-            text.contains("egg") -> {
-                "One boiled egg contains about 6g of protein and 75 kcal. Having 2 eggs with breakfast or as an afternoon tong snack is the most cost-effective protein source for students in Dhaka."
-            }
-            text.contains("snack") || text.contains("healthy") -> {
-                if (isVegetarian) {
-                    "Seasonal fruit cups (৳25) from campus carts or roasted peanuts with tong cha (৳15) keep you energized without breaking your monthly student food pool."
-                } else {
-                    "Fresh seasonal fruit from campus carts (৳25) or 2 boiled eggs (৳30) provide sustained energy without wasting feast reserve money."
-                }
-            }
-            else -> {
-                "Balancing protein and carbohydrates within your daily allowance (b) keeps your nutrition high and your monthly savings intact. Let me know if you want to test a meal swap!"
-            }
-        }
-    }
-
-    private suspend fun executePlanChangeFlow(
-        userText: String,
-        currentSlots: List<MealSlot>,
-        isVegetarian: Boolean,
-        dateString: String,
-        userId: String?,
-        repository: NutriMateFirestoreRepository?,
-        onStepGenerated: (ChatMessage) -> Unit
-    ): ChatMessage {
-        val lower = userText.lowercase()
-
-        // Infer slot (breakfast, lunch, snacks, dinner)
-        val targetSlot = when {
-            lower.contains("breakfast") -> "breakfast"
-            lower.contains("snack") -> "snacks"
-            lower.contains("dinner") -> "dinner"
-            else -> "lunch" // Default slot if unspecified e.g. "I want biriyani"
-        }
-
-        // Infer search query
-        val query = when {
-            lower.contains("kacchi") || lower.contains("biriyani") || lower.contains("biryani") -> "biriyani"
-            lower.contains("khichuri") -> "khichuri"
-            lower.contains("paratha") -> "paratha"
-            lower.contains("fish") -> "fish"
-            lower.contains("thali") || lower.contains("veg") -> "veg"
-            lower.contains("tehari") -> "tehari"
-            lower.contains("fruit") -> "fruit"
-            lower.contains("cheap") || lower.contains("save") -> ""
-            else -> userText.replace("i want", "").replace("swap my", "").replace("for lunch", "").replace("for dinner", "").trim()
-        }
-
-        delay(350)
-
-        // Step 1: search_menu
-        val searchResults = toolsGatekeeper.searchMenu(query, targetSlot)
-        val searchBadge = ChatMessage(
-            id = UUID.randomUUID().toString(),
-            sender = MessageSender.FUNCTION_CALL,
-            content = "search_menu(query=\"$query\", slot=\"$targetSlot\")",
-            toolName = "search_menu",
-            toolArgs = "query=\"$query\", slot=\"$targetSlot\"",
-            toolResult = if (searchResults.isNotEmpty()) "Found ${searchResults.size} items: ${searchResults.first().name} (৳${searchResults.first().priceTk})" else "No items found"
-        )
-        onStepGenerated(searchBadge)
-
-        if (searchResults.isEmpty()) {
-            delay(400)
-            val alternatives = toolsGatekeeper.getAlternatives(targetSlot)
-            val altBadge = ChatMessage(
-                id = UUID.randomUUID().toString(),
-                sender = MessageSender.FUNCTION_CALL,
-                content = "get_alternatives(slot=\"$targetSlot\")",
-                toolName = "get_alternatives",
-                toolArgs = "slot=\"$targetSlot\"",
-                toolResult = "${alternatives.size} alternatives: ${alternatives.joinToString { "${it.name} (৳${it.priceTk})" }}"
-            )
-            onStepGenerated(altBadge)
-
-            val reply = ChatMessage(
-                id = UUID.randomUUID().toString(),
-                sender = MessageSender.ASSISTANT,
-                content = "I couldn't find \"$query\" for $targetSlot. How about ${alternatives.firstOrNull()?.name} (৳${alternatives.firstOrNull()?.priceTk}) instead?"
-            )
-            onStepGenerated(reply)
-            return reply
-        }
-
-        val chosenItem = searchResults.first()
-        delay(400)
-
-        // Step 2: check(slot, item_id)
-        val checkRes = toolsGatekeeper.check(targetSlot, chosenItem.itemId)
-        val checkBadge = ChatMessage(
-            id = UUID.randomUUID().toString(),
-            sender = MessageSender.FUNCTION_CALL,
-            content = "check(slot=\"$targetSlot\", item_id=\"${chosenItem.itemId}\")",
-            toolName = "check",
-            toolArgs = "slot=\"$targetSlot\", item=\"${chosenItem.itemId}\"",
-            toolResult = if (checkRes.ok) "ok: true, price=৳${checkRes.priceTk}, allowance=৳${checkRes.slotBudgetTk}" else "ok: false, reason=over_budget, short_by=৳${String.format("%.2f", checkRes.shortByTk ?: 0.0)}"
-        )
-        onStepGenerated(checkBadge)
-
-        delay(400)
-
-        if (checkRes.ok && checkRes.checkToken != null) {
-            // Fits within budget: call update(check_token) directly
-            val updateRes = toolsGatekeeper.update(checkRes.checkToken, currentSlots, userId, repository)
-            val updateBadge = ChatMessage(
-                id = UUID.randomUUID().toString(),
-                sender = MessageSender.FUNCTION_CALL,
-                content = "update(token=\"${checkRes.checkToken.take(8)}...\")",
-                toolName = "update",
-                toolArgs = "token=\"${checkRes.checkToken.take(8)}...\"",
-                toolResult = "status: applied"
-            )
-            onStepGenerated(updateBadge)
-
-            delay(350)
-            val finalReply = ChatMessage(
-                id = UUID.randomUUID().toString(),
-                sender = MessageSender.ASSISTANT,
-                content = "Swapped $targetSlot to ${chosenItem.name} at ${chosenItem.place} for ৳${chosenItem.priceTk}. It fits within your daily allowance!"
-            )
-            onStepGenerated(finalReply)
-            return finalReply
-
-        } else {
-            // Over budget: call find_funding(slot, item_id)
-            val fundingRes = toolsGatekeeper.findFunding(targetSlot, chosenItem.itemId)
-            val fundingBadge = ChatMessage(
-                id = UUID.randomUUID().toString(),
-                sender = MessageSender.FUNCTION_CALL,
-                content = "find_funding(slot=\"$targetSlot\", item_id=\"${chosenItem.itemId}\")",
-                toolName = "find_funding",
-                toolArgs = "slot=\"$targetSlot\", item=\"${chosenItem.itemId}\"",
-                toolResult = if (fundingRes.options.isNotEmpty()) "option: ${fundingRes.options.first().summary}" else "no funding options"
-            )
-            onStepGenerated(fundingBadge)
-
-            if (fundingRes.options.isEmpty()) {
-                val reply = ChatMessage(
-                    id = UUID.randomUUID().toString(),
-                    sender = MessageSender.ASSISTANT,
-                    content = "${chosenItem.name} is ৳${chosenItem.priceTk}, exceeding your allowance. All feast reserves and buffers are exhausted."
-                )
-                onStepGenerated(reply)
-                return reply
-            }
-
-            val chosenOption = fundingRes.options.first()
-            delay(400)
-
-            // Step 4: Call update(token)
-            val updateRes = toolsGatekeeper.update(chosenOption.token, currentSlots, userId, repository)
-            val updateBadge = ChatMessage(
-                id = UUID.randomUUID().toString(),
-                sender = MessageSender.FUNCTION_CALL,
-                content = "update(token=\"${chosenOption.token.take(8)}...\")",
-                toolName = "update",
-                toolArgs = "token=\"${chosenOption.token.take(8)}...\"",
-                toolResult = "status: ${updateRes.status}"
-            )
-            onStepGenerated(updateBadge)
-
-            delay(400)
-
-            return if (updateRes.status == "needs_confirmation") {
-                val feastName = chosenOption.feastTitle ?: "Friday's feast"
-                val assistantMsg = ChatMessage(
-                    id = UUID.randomUUID().toString(),
-                    sender = MessageSender.ASSISTANT,
-                    content = "${chosenItem.name} is ৳${chosenItem.priceTk} and today's $targetSlot allowance is ৳${checkRes.slotBudgetTk}. I can cover the ৳${String.format("%.2f", chosenOption.shortfallTk)} gap by cancelling $feastName. You'd lose the feast. Tap Confirm if you want to go ahead.",
-                    tradeoffToken = chosenOption.token,
-                    isPendingConfirmation = true
-                )
-                onStepGenerated(assistantMsg)
-                assistantMsg
-            } else {
-                val assistantMsg = ChatMessage(
-                    id = UUID.randomUUID().toString(),
-                    sender = MessageSender.ASSISTANT,
-                    content = updateRes.message ?: "Plan updated successfully!"
-                )
-                onStepGenerated(assistantMsg)
-                assistantMsg
-            }
+        } catch (e: TimeoutCancellationException) {
+            Log.e(TAG, "Gemini generation timed out", e)
+            chatSession = null
+            throw e
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "Gemini AI generation failed via Firebase AI Logic", e)
+            chatSession = null
+            throw e
         }
     }
 }
