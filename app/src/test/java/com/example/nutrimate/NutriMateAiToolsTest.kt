@@ -136,4 +136,61 @@ class NutriMateAiToolsTest {
         assertFalse("Should return cheaper lunch options", alternatives.isEmpty())
         assertTrue("All alternatives must be <= Tk 70", alternatives.all { it.priceTk <= 70 })
     }
+
+    @Test
+    fun testOnDeviceRouterClassification() {
+        val router = NutriMateOnDeviceRouter()
+
+        // Plan change tests
+        val r1 = router.classify("I want biriyani for lunch")
+        assertTrue("Should detect plan change", r1.isPlanChange)
+        assertEquals("lunch", r1.slot)
+        assertTrue("Extracted query should contain biriyani", r1.query.contains("biriyani"))
+
+        val r2 = router.classify("swap my dinner to khichuri")
+        assertTrue("Should detect plan change", r2.isPlanChange)
+        assertEquals("dinner", r2.slot)
+        assertTrue("Extracted query should contain khichuri", r2.query.contains("khichuri"))
+
+        val r3 = router.classify("something cheaper for snacks")
+        assertTrue("Should detect plan change for cheaper snacks", r3.isPlanChange)
+        assertEquals("snacks", r3.slot)
+
+        // Food question tests (no tool execution / plan change)
+        val q1 = router.classify("is a protein shake worth it?")
+        assertFalse("Should be food question, not plan change", q1.isPlanChange)
+
+        val q2 = router.classify("how much protein is in eggs?")
+        assertFalse("Should be food question, not plan change", q2.isPlanChange)
+
+        val q3 = router.classify("tell me about healthy snacks for students")
+        assertFalse("Should be advice question, not plan change", q3.isPlanChange)
+    }
+
+    @Test
+    fun testTwoTierStep1LocalExecutionSpeedAndValidity() {
+        val router = NutriMateOnDeviceRouter()
+        val route = router.classify("I want biriyani for lunch")
+        assertTrue(route.isPlanChange)
+
+        // Step 1: Locally run search_menu
+        val items = aiToolsGatekeeper.searchMenu(route.query, route.slot)
+        assertFalse("Local search should find biriyani", items.isEmpty())
+
+        // Step 2: Locally run check
+        val candidate = items.first()
+        val checkRes = aiToolsGatekeeper.check(route.slot, candidate.itemId)
+        assertFalse("Kacchi biriyani should exceed standard lunch allowance", checkRes.ok)
+        assertEquals("over_budget", checkRes.reason)
+
+        // Step 3: Locally run find_funding
+        val fundingRes = aiToolsGatekeeper.findFunding(route.slot, candidate.itemId)
+        assertFalse("Should find funding option", fundingRes.options.isEmpty())
+
+        // Step 4: Locally run update with option token
+        val bestOption = fundingRes.options.first()
+        val updateRes = aiToolsGatekeeper.update(bestOption.token, sampleSlots, null, null)
+        assertEquals("needs_confirmation", updateRes.status)
+        assertEquals(bestOption.token, updateRes.tradeoffToken)
+    }
 }

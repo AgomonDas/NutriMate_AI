@@ -9,7 +9,8 @@ Implement an AI meal planner chat assistant powered by Gemini (`gemini-3.8-flash
 > [!IMPORTANT]
 > The following decisions were confirmed based on your preferences:
 
-- **Gemini Model & Function Calling**: Powered by `gemini-3.8-flash` via Firebase AI Logic, registered with 5 client-side deterministic tools (`search_menu`, `check`, `find_funding`, `update`, `get_alternatives`).
+- **Two-Tier Hybrid Architecture**: To solve the high latency caused by 5-hop multi-turn cloud round-trips, the system employs an on-device Tier 1 classifier/router (`NutriMateOnDeviceRouter`) to execute Step 1 locally in milliseconds (`search_menu`, `check`, `find_funding`, `update`), eliminating cloud delays for direct meal swaps.
+- **Gemini Single-Turn Synthesis (Tier 2)**: Real `gemini-3.8-flash` via Firebase AI Logic is called in a single fast hop (0 tool turns) to synthesize plain-English trade-off explanations or directly answer nutrition questions.
 - **Tool-Call Trace Display**: Monospace tool execution badges in the chat stream showing real-time step-by-step tool invocation (e.g., `search_menu("biriyani") → 1 match`, `check("lunch", "kacchi_biriyani") → over_budget by Tk 39.12`, `find_funding(...) → cancel Friday feast`).
 - **Confirmation UX**: When an `update` tool invocation returns `needs_confirmation`, the chat UI renders an inline actionable card with **Confirm** and **Decline** buttons alongside the assistant's plain-English explanation.
 - **Backend Isolation**: AI never modifies tables directly; state is mutated exclusively through signed tokens passed to the `update()` gatekeeper.

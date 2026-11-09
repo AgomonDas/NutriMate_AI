@@ -114,11 +114,19 @@ class NutriMateAiToolsGatekeeper(
             .filter { item ->
                 val matchesQuery = q.isEmpty() ||
                         item.name.lowercase().contains(q) ||
-                        item.place.lowercase().contains(q) ||
-                        item.itemId.lowercase().contains(q)
+                        item.itemId.lowercase().contains(q) ||
+                        item.place.lowercase().contains(q)
                 val matchesSlot = slot.isNullOrBlank() || item.slot.equals(slot.trim(), ignoreCase = true)
                 val matchesPrice = maxPriceTk == null || item.priceTk <= maxPriceTk
                 matchesQuery && matchesSlot && matchesPrice
+            }
+            .sortedByDescending { item ->
+                when {
+                    item.name.lowercase().contains(q) -> 2
+                    item.itemId.lowercase().contains(q) -> 2
+                    item.place.lowercase().contains(q) -> 1
+                    else -> 0
+                }
             }
             .take(5)
     }
