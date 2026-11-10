@@ -193,4 +193,35 @@ class NutriMateAiToolsTest {
         assertEquals("needs_confirmation", updateRes.status)
         assertEquals(bestOption.token, updateRes.tradeoffToken)
     }
+
+    @Test
+    fun testEnhancedRouterBengaliSlotsAndPriceConstraints() {
+        val router = NutriMateOnDeviceRouter()
+
+        // 1. Bengali slots & items
+        val r1 = router.classify("shokal e paratha khabo")
+        assertTrue("Should detect plan change for breakfast", r1.isPlanChange)
+        assertEquals("breakfast", r1.slot)
+        assertTrue(r1.query.contains("paratha"))
+        assertTrue("Classification time must be tracked", r1.classificationTimeMs >= 0)
+
+        val r2 = router.classify("raat e beef tehari under 100 tk")
+        assertTrue("Should detect dinner plan change", r2.isPlanChange)
+        assertEquals("dinner", r2.slot)
+        assertEquals(100, r2.maxPriceTk)
+        assertTrue(r2.query.contains("tehari"))
+
+        // 2. ChatMessage latency and isLocalExecution properties
+        val msg = com.example.nutrimate.model.ChatMessage(
+            id = "test_1",
+            sender = com.example.nutrimate.model.MessageSender.FUNCTION_CALL,
+            content = "search_menu(query=\"tehari\")",
+            toolName = "search_menu",
+            toolResult = "Found 1 item",
+            latencyMs = 8L,
+            isLocalExecution = true
+        )
+        assertEquals(8L, msg.latencyMs)
+        assertTrue(msg.isLocalExecution)
+    }
 }

@@ -1,34 +1,25 @@
-# NutriMate Chat AI: Gemini Function Calling & Feast Reserve Engine
+# NutriMate 2-Tier Hybrid AI & Multi-Turn Chat Architecture (MVP Rewrite)
 
-Implement an AI meal planner chat assistant powered by Gemini (`gemini-3.8-flash`) with function calling. The AI assists budget-constrained students in Bangladesh to adjust their meal plans, evaluate upgrades through a deterministic gatekeeper, navigate feast trade-offs, and answer nutrition questions—without ever editing the database directly or performing untrusted financial arithmetic.
+Transform the NutriMate AI chat system into a production-grade, MVP-quality 2-tier hybrid assistant. The system pairs an ultra-fast (<20ms) on-device intent classifier and deterministic gatekeeper with a cloud-based, multi-turn Gemini 3.8 Flash copilot grounded in the user's active campus meals and budget ledger.
 
 ---
 
 ### User Review & Critical Decisions
 
 > [!IMPORTANT]
-> The following decisions were confirmed based on your preferences:
+> The following architectural and UX choices have been confirmed for the MVP rewrite:
 
-- **Two-Tier Hybrid Architecture**: To solve the high latency caused by 5-hop multi-turn cloud round-trips, the system employs an on-device Tier 1 classifier/router (`NutriMateOnDeviceRouter`) to execute Step 1 locally in milliseconds (`search_menu`, `check`, `find_funding`, `update`), eliminating cloud delays for direct meal swaps.
-- **Gemini Single-Turn Synthesis (Tier 2)**: Real `gemini-3.8-flash` via Firebase AI Logic is called in a single fast hop (0 tool turns) to synthesize plain-English trade-off explanations or directly answer nutrition questions.
-- **Tool-Call Trace Display**: Monospace tool execution badges in the chat stream showing real-time step-by-step tool invocation (e.g., `search_menu("biriyani") → 1 match`, `check("lunch", "kacchi_biriyani") → over_budget by Tk 39.12`, `find_funding(...) → cancel Friday feast`).
-- **Confirmation UX**: When an `update` tool invocation returns `needs_confirmation`, the chat UI renders an inline actionable card with **Confirm** and **Decline** buttons alongside the assistant's plain-English explanation.
-- **Backend Isolation**: AI never modifies tables directly; state is mutated exclusively through signed tokens passed to the `update()` gatekeeper.
+- **Confirmed Decision 1 (Model & Routing)**: Hybrid on-device router paired with **Gemini 3.8 Flash** (`models/gemini-3.8-flash`) maintaining multi-turn conversation memory.
+- **Confirmed Decision 2 (Tool Trace Presentation)**: Collapsible monospace step cards featuring real-time latency badges (e.g., `⚡ 8ms · on-device`, `⚡ 420ms · Gemini 3.8 Flash`) and status chips.
+- **Confirmed Decision 3 (AI Persona)**: Friendly Bangladeshi campus budget copilot using authentic Dhaka student context (Taka ৳, BUET/Palashi/DU hubs, mess plans, and local food items).
 
 ---
 
 ### 1. Overview & Core Concept
 
-NutriMate AI assists students managing tight monthly food budgets (default Tk 7,000 / 700,000 paisa) across 4 daily meal slots (Breakfast 20%, Lunch 40%, Snacks 15%, Dinner 25%) and 2 planned weekend feasts (Tk 466.66 each).
-
-The chat copilot categorizes incoming messages into two distinct pathways:
-1. **Plan-Changing Requests** (*"I want biriyani for lunch"*, *"Find me a cheaper dinner"*):
-   - The model must use tools and cannot invent prices or edit data directly.
-   - It performs `search_menu`, `check`, `find_funding`, and `update`.
-   - If an item exceeds today's slot allowance, it finds funding (unallocated buffer $U$ first, or sacrifice of nearest planned feast).
-   - If a feast is affected, it requests user consent before applying.
-2. **Food & Nutrition Questions** (*"Is a protein shake worth it for gym?"*, *"How much protein in 2 eggs?"*):
-   - The model answers directly in conversational text with zero tool calls and zero state mutations.
+- **What It Does**: Enables students to converse naturally with NutriMate about meal swaps, budget checks, and nutritional advice. Instant actions (budget checks, menu searches, feast trade-offs) resolve in milliseconds locally, while nuanced dietary advice and feast explanations stream smoothly from Gemini 3.8 Flash without multi-turn latency bottlenecks.
+- **Target Audience**: University students in Bangladesh managing daily food budgets, wanting fast meal changes without waiting 15–20 seconds for multiple cloud round-trips.
+- **Key Value**: Deterministic budget enforcement (no hallucinated prices or rogue ledger edits) combined with empathetic, conversational AI and transparent, inspectable tool execution.
 
 ---
 
@@ -36,121 +27,118 @@ The chat copilot categorizes incoming messages into two distinct pathways:
 
 #### Key User Flows
 
+1. **Plan Swap Flow (e.g. "I want Kacchi Biriyani for lunch")**:
+   - User types or taps quick prompt chip.
+   - Tier 1 router classifies intent in ~10ms, executes `search_menu` and `check` against live Firestore/campus catalog.
+   - Collapsible monospace cards appear in chat showing each step and execution time.
+   - If over budget, `find_funding` calculates the exact feast sacrifice required.
+   - Tier 2 Gemini 3.8 Flash crafts a polite, contextual trade-off message with inline Confirm/Decline buttons.
+   - Tapping Confirm mutates the budget ledger, syncs Firestore, and cancels the feast.
+
+2. **Conversational Multi-Turn Advice Flow (e.g. "Is a gym protein shake worth it on my budget?")**:
+   - Router identifies nutritional inquiry.
+   - Gemini 3.8 Flash generates a thoughtful response grounded in student economics in Bangladesh (৳).
+   - Follow-up turns (e.g., "What can I eat instead to get 30g protein?") remember the previous turn's context seamlessly.
+
+#### Visual Styling & Layout
+
 ```
-[ User sends message: "I want kacchi biriyani for lunch" ]
-                         │
-                         ▼
 ┌────────────────────────────────────────────────────────┐
-│ 1. AI executes search_menu("biriyani", "lunch")        │
-│    └─ [Badge]: 🔍 search_menu("biriyani") → 1 item     │
+│  NutriMate AI Copilot              [⚡ Hybrid Active] ✕ │
+│  Dhaka Campus · Live Budget Ledger                     │
 ├────────────────────────────────────────────────────────┤
-│ 2. AI executes check("lunch", "kacchi_biriyani")       │
-│    └─ [Badge]: ⚖️ check(lunch, item=5) → Over by ৳39.12│
-├────────────────────────────────────────────────────────┤
-│ 3. AI executes find_funding("lunch", "kacchi_biriyani")│
-│    └─ [Badge]: 💡 find_funding → Cancel Friday Feast   │
-├────────────────────────────────────────────────────────┤
-│ 4. AI executes update(token="token_feast_cancel_...")  │
-│    └─ [Badge]: 🔒 update(...) → needs_confirmation     │
-└────────────────────────────────────────────────────────┘
-                         │
-                         ▼
-┌────────────────────────────────────────────────────────┐
-│ Assistant Message:                                     │
-│ "Kacchi biriyani is ৳120 and your lunch allowance is   │
-│ ৳80.88. I can cover the gap by cancelling Friday's     │
-│ feast. You'd lose that feast. Tap Confirm to apply."  │
 │                                                        │
-│ [ ✅ Confirm Trade-off ]   [ ❌ Decline / Alternatives] │
+│  [User Bubble]                                         │
+│  "Can I swap my dinner to beef tehari?"                │
+│                                                        │
+│  ┌──────────────────────────────────────────────────┐  │
+│  │ ⚡ 11ms · on-device              [▼ Monospace]    │  │
+│  │ > search_menu(query="tehari", slot="dinner")     │  │
+│  │   ↳ Found: Old Dhaka Beef Tehari (৳51, 780 kcal) │  │
+│  │ > check(slot="dinner", item_id="rb_1")           │  │
+│  │   ↳ Status: OK (fits ৳65 slot allowance)         │  │
+│  │ > update(token="chk_8f1a...")                    │  │
+│  │   ↳ Status: applied                              │  │
+│  └──────────────────────────────────────────────────┘  │
+│                                                        │
+│  [Assistant Bubble - Gemini 3.8 Flash]                 │
+│  "Updated your dinner to Old Dhaka Beef Tehari from     │
+│   Royal Biriyani (৳51, 780 kcal). You saved ৳14 under  │
+│   your allowance!"                                     │
+│                                                        │
+├────────────────────────────────────────────────────────┤
+│  [🍛 Biriyani] [🥗 Cheaper lunch] [💪 Protein options] │
+│  [Type a meal change or question...        ] [Send ➢]  │
 └────────────────────────────────────────────────────────┘
 ```
 
-#### Visual Identity & Chat Elements
-- **Monospace Tool Badges**: Compact dark pills (`#090E1A` background, emerald border `#34D98A`, typography `JetBrains Mono / Monospace` 11sp) displaying each function call name, input arguments, and result preview.
-- **Interactive In-Chat Action Cards**: Embedded directly inside assistant bubbles when `needs_confirmation` is returned, allowing immediate 1-tap confirmation or cancellation.
-- **Quick Suggestion Chips**: Horizontal scroll list above the input field:
-  - 🍛 *I want biriyani for lunch* (Triggers feast trade-off flow)
-  - 🥪 *Swap snack to fruit cart* (Triggers instant in-budget swap)
-  - 💸 *Something cheaper for dinner* (Triggers `get_alternatives`)
-  - 💪 *Is protein shake worth it?* (Triggers pure nutritional advice)
+- **Collapsible Step Cards**: Styled as modern dark terminal boxes (`#08101E`) with neon mint border (`#6AF0A6`), monospace text, toggleable details, and execution badges.
+- **Conversation Bubbles**: M3 dark gradient glass for user and assistant, with clear contrast, markdown formatting, and accessible touch targets.
 
 ---
 
 ### 3. Key Product Decisions & Trade-Offs
 
-#### Decision 1: Token-Efficient Compact System Context
-- **Chosen Approach**: Inject only a 120-token dynamic context snippet into the Gemini prompt:
-  ```
-  Today: Sunday, Nov 1.
-  Budget Pool: Tk 7,000. Unallocated: Tk 0.
-  Allowances: Breakfast Tk 40.44, Lunch Tk 80.88, Snacks Tk 30.33, Dinner Tk 50.55.
-  Next Feast: Friday Feast #1 (Tk 466.66, active).
-  User: Student, non-vegetarian.
-  ```
-- **Why**: Eliminates 3,600+ tokens of full-month calendar dump per turn, speeding up responses by 5x and staying well within latency budgets.
-
-#### Decision 2: Signed Ephemeral Tokens for Write Protection
-- **Chosen Approach**: `update()` requires a cryptographic/UUID token generated by `check()` or `find_funding()`.
-- **Why**: Prevents hallucinated price updates or unsolicited mutations; the model cannot make changes without the backend validating the dry-run state first.
+- **Decision 1: Two-Tier Hybrid over Pure Cloud Function Calling**:
+  - *Chosen Approach*: On-device deterministic routing for Step 1 (search, budget validation, token signing), Cloud Gemini 3.8 Flash for multi-turn synthesis and nutritional advice.
+  - *Why*: Pure cloud function calling requires 3 to 4 sequential round-trips over mobile networks (often taking 10–25 seconds in Bangladesh). The hybrid approach brings latency down to < 1.2s while guaranteeing mathematical budget consistency.
+- **Decision 2: Persistent Multi-Turn Conversation Memory**:
+  - *Chosen Approach*: Maintain a Gemini `Chat` session across user turns in the ViewModel, preserving message history.
+  - *Why*: Allows students to ask natural follow-ups ("What about dinner?", "Is that enough protein?") without repeating context.
+- **Decision 3: Zero Hallucination Budget Gatekeeper**:
+  - *Chosen Approach*: The LLM is never allowed to directly calculate balances or write to the database. All plan changes must bear a cryptographically signed HMAC token issued by `FeastBudgetGatekeeper`.
 
 ---
 
 ### 4. Technical Architecture & Data Strategy
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Jetpack Compose Chat UI                      │
-│             (ChatSheet.kt with Tool Trace Badges)               │
-└──────────────┬───────────────────────────────────▲──────────────┘
-               │ (User message)                    │ (Stream / Badges)
-               ▼                                   │
-┌─────────────────────────────────────────────────────────────────┐
-│                    NutriMateChatViewModel                       │
-│    - Maintains message history & active proposal tokens         │
-│    - Orchestrates multi-turn tool execution loop (max 6 steps)  │
-└──────────────┬───────────────────────────────────▲──────────────┘
-               │ Function Calls                    │ Tool Results
-               ▼                                   │
-┌─────────────────────────────────────────────────────────────────┐
-│                  NutriMateAiToolsGatekeeper                     │
-│  ├─ search_menu(query, slot, max_price_tk)                      │
-│  ├─ check(slot, item_id)                                        │
-│  ├─ find_funding(slot, item_id)                                 │
-│  ├─ update(token)                                               │
-│  └─ get_alternatives(slot, max_price_tk)                        │
-└──────────────┬───────────────────────────────────▲──────────────┘
-               │ Read / Validate                   │ Update State
-               ▼                                   │
-┌─────────────────────────────────────────────────────────────────┐
-│            FeastEngine & NutriMateFirestoreRepository           │
-│    - Integer paisa arithmetic (৳1 = 100 paisa)                  │
-│    - Strict Ledger Invariant: sum(allowances) + feasts <= P     │
-│    - Dual-write to user meal slots & community staging table    │
-└─────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                            NutriMate UI (ChatSheet)                          │
+└───────────────────────┬──────────────────────────────▲───────────────────────┘
+                        │ User Prompt                  │ StateFlow<List<ChatMessage>>
+┌───────────────────────▼──────────────────────────────┴───────────────────────┐
+│                              NutriMateViewModel                              │
+└───────────────────────┬──────────────────────────────▲───────────────────────┘
+                        │ processUserMessage()         │ Emits steps & replies
+┌───────────────────────▼──────────────────────────────┴───────────────────────┐
+│                             NutriMateChatEngine                              │
+│                                                                              │
+│   ┌───────────────────────────────┐     ┌────────────────────────────────┐   │
+│   │   TIER 1: On-Device Router    │     │   TIER 2: Cloud Gemini 3.8     │   │
+│   │   - Regex & Slot Extractor    │     │   - Firebase AI Logic          │   │
+│   │   - Latency: <15ms            │     │   - Multi-Turn Chat Session    │   │
+│   │   - search_menu / check       │     │   - Empathetic Student Coach   │   │
+│   └───────────────┬───────────────┘     └────────────────▲───────────────┘   │
+│                   │ Tokens                               │ Context & Tradeoffs
+┌───────────────────▼──────────────────────────────────────┴───────────────────┐
+│                      NutriMateAiToolsGatekeeper                              │
+│   - Enforces Allowance, Feast Reserves & Signs Audit Tokens                  │
+└───────────────────┬──────────────────────────────────────────────────────────┘
+                    │ Reads Catalog & Syncs Slots
+┌───────────────────▼──────────────────────────────────────────────────────────┐
+│                   NutriMateFirestoreRepository & Firestore                   │
+│   - /restaurants (coordinates, menus)                                        │
+│   - /central_foods & /users/{uid}/meals                                      │
+└──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-#### Tool Definitions
-1. `search_menu(query: String, slot: String, max_price_tk: Int?)`
-   - Returns up to 5 items: `{item_id, name, place, price_tk, kcal}`.
-2. `check(slot: String, item_id: String)`
-   - Read-only dry run. Returns `{ok: true, price_tk, slot_budget_tk, kcal, check_token}` or `{ok: false, reason: "over_budget", short_by_tk}`.
-3. `find_funding(slot: String, item_id: String)`
-   - Evaluates buffer $U$ then upcoming planned feast $F$. Returns list of options with plain-English summary and signed funding token.
-4. `update(token: String)`
-   - Only write tool. Validates token; returns `{status: "applied" | "needs_confirmation" | "rejected", explanation: String}`.
-5. `get_alternatives(slot: String, max_price_tk: Int?)`
-   - Returns 2–3 cheaper options that fit strictly within `slot_budget_tk`.
+#### Proposed Component Enhancements
 
----
+1. **`NutriMateChatEngine.kt`**:
+   - Refactor to maintain a persistent `Chat` session with `gemini-3.8-flash` via Firebase AI Logic.
+   - Track timing markers (`System.currentTimeMillis()`) across on-device operations and cloud inference to stamp latency on all tool execution messages.
+   - Robust error handling with `withTimeout(30_000L)`, catching `CancellationException` and surfacing friendly fallback messages.
 
-### Implementation Phases
+2. **`NutriMateOnDeviceRouter.kt`**:
+   - Enhance intent classification and slot recognition for authentic Bengali campus food queries (e.g. "kacchi", "khichuri", "tehari", "paratha", "shingara", "dim", "cha").
+   - Extract budget constraints (e.g. "under 60 tk", "below 100", "cheaper").
 
-- **Phase 1: Tool Gatekeeper & In-Memory Catalog Engine**
-  - Implement `NutriMateAiToolsGatekeeper.kt` containing the 5 specified tools, token generator, and deterministic state transitions.
-- **Phase 2: Gemini Tool Calling Integration (Firebase AI Logic)**
-  - Configure `gemini-3.8-flash` with Function Declarations for all 5 tools.
-  - Implement the multi-step execution loop in `NutriMateChatViewModel` handling function call dispatching and tool responses.
-- **Phase 3: Chat UI with Trace Badges & Trade-off Confirmation**
-  - Update `ChatSheet.kt` to render monospace badges, tool arguments, return values, and interactive trade-off confirmation dialogs.
-- **Phase 4: Verification & Automated Tests**
-  - Write Robolectric / unit tests verifying both standard in-budget swaps and over-budget feast cancellations with tool trace history.
+3. **`ChatSheet.kt`**:
+   - Implement `CollapsibleToolStepCard` composable for `MessageSender.FUNCTION_CALL`:
+     - Displays tool name, latency tag (`⚡ 14ms`), and execution status.
+     - Click-to-expand details showing arguments and return payload.
+   - Add animated typing/processing indicator while Gemini is synthesizing.
+
+4. **`CampusLocationTest.kt` & Test Suite**:
+   - Unit tests validating on-device classification accuracy, latency stamping, and multi-turn message state transitions.

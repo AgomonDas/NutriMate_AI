@@ -64,7 +64,9 @@ data class ChatMessage(
     val toolArgs: String? = null,
     val toolResult: String? = null,
     val tradeoffToken: String? = null,
-    val isPendingConfirmation: Boolean = false
+    val isPendingConfirmation: Boolean = false,
+    val latencyMs: Long? = null,
+    val isLocalExecution: Boolean = false
 )
 
 data class MonthlyDaySpend(

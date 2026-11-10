@@ -77,21 +77,67 @@ service cloud.firestore {
              data.status == 'pending';
     }
 
+    function isValidCentralFood(data) {
+      return data.id is string && isValidId(data.id) &&
+             data.name is string && data.name.size() > 0 && data.name.size() <= 120 &&
+             data.place is string && data.place.size() > 0 && data.place.size() <= 120 &&
+             data.priceTk is int && data.priceTk >= 0 &&
+             data.kcal is int && data.kcal >= 0 &&
+             data.slot is string &&
+             (!('isPartner' in data) || data.isPartner is bool) &&
+             (!('discountTag' in data) || (data.discountTag is string && data.discountTag.size() <= 40)) &&
+             (!('areaId' in data) || (data.areaId is string && data.areaId.size() <= 60)) &&
+             (!('areaName' in data) || (data.areaName is string && data.areaName.size() <= 100));
+    }
+
+    function isValidPartnerRestaurant(data) {
+      return data.id is string && isValidId(data.id) &&
+             data.name is string && data.name.size() > 0 && data.name.size() <= 120 &&
+             data.areaId is string && data.areaId.size() > 0 && data.areaId.size() <= 60 &&
+             data.areaName is string && data.areaName.size() > 0 && data.areaName.size() <= 100 &&
+             data.discountPercentage is int && data.discountPercentage >= 0 && data.discountPercentage <= 100 &&
+             (!('cuisine' in data) || (data.cuisine is string && data.cuisine.size() <= 80)) &&
+             (!('discountTag' in data) || (data.discountTag is string && data.discountTag.size() <= 40));
+    }
+
+    function isValidRestaurant(data) {
+      return data.id is string && isValidId(data.id) &&
+             data.name is string && data.name.size() > 0 && data.name.size() <= 120 &&
+             data.latitude is number && data.latitude >= -90.0 && data.latitude <= 90.0 &&
+             data.longitude is number && data.longitude >= -180.0 && data.longitude <= 180.0 &&
+             (!('address' in data) || (data.address is string && data.address.size() <= 200)) &&
+             (!('cuisine' in data) || (data.cuisine is string && data.cuisine.size() <= 80)) &&
+             (!('rating' in data) || data.rating is number) &&
+             (!('isPartner' in data) || data.isPartner is bool) &&
+             (!('discountPercentage' in data) || (data.discountPercentage is int && data.discountPercentage >= 0 && data.discountPercentage <= 100)) &&
+             (!('discountTag' in data) || (data.discountTag is string && data.discountTag.size() <= 50)) &&
+             (!('menu' in data) || data.menu is list);
+    }
+
     // Default deny all
     match /{document=**} {
       allow read, write: if false;
     }
 
-    // Central Foods Catalog (Read-only for users)
-    match /central_foods/{foodId} {
+    // Top-level Restaurants Collection (includes coordinates and embedded menu items)
+    match /restaurants/{restaurantId} {
       allow read: if isSignedIn();
-      allow write: if false; // Curated by admins / devs
+      allow create, update: if isSignedIn() && isValidId(restaurantId) && isValidRestaurant(incoming());
+      allow delete: if false;
     }
 
-    // Partner Restaurants (Read-only for users)
+    // Central Foods Catalog (Read & Seeding for authenticated users)
+    match /central_foods/{foodId} {
+      allow read: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidId(foodId) && isValidCentralFood(incoming());
+      allow delete: if false;
+    }
+
+    // Partner Restaurants (Read & Seeding for authenticated users)
     match /partner_restaurants/{partnerId} {
       allow read: if isSignedIn();
-      allow write: if false;
+      allow create, update: if isSignedIn() && isValidId(partnerId) && isValidPartnerRestaurant(incoming());
+      allow delete: if false;
     }
 
     // Community Submissions (Dev staging table)

@@ -18,7 +18,8 @@ data class AiMenuItem(
     val priceTk: Int,
     val kcal: Int,
     val slot: String,
-    val isVegetarian: Boolean = false
+    val isVegetarian: Boolean = false,
+    val isPartner: Boolean = false
 )
 
 data class CheckResult(
@@ -67,8 +68,7 @@ data class StoredToken(
 class NutriMateAiToolsGatekeeper(
     private val feastGatekeeper: FeastBudgetGatekeeper
 ) {
-    // In-memory student food catalog across 4 meal slots
-    val menuCatalog: List<AiMenuItem> = listOf(
+    private val defaultCatalog: List<AiMenuItem> = listOf(
         // Breakfast
         AiMenuItem("paratha_egg", "Paratha, egg, tea", "Dhaka Paratha House", 35, 450, "breakfast", false),
         AiMenuItem("khichuri_combo", "Khichuri combo", "Campus Canteen", 38, 420, "breakfast", true),
@@ -99,6 +99,27 @@ class NutriMateAiToolsGatekeeper(
         AiMenuItem("dal_bhat_vorta", "Rice, 3 vortas & thick dal", "Campus Tong", 35, 520, "dinner", true),
         AiMenuItem("chicken_khichuri_hot", "Hot chicken khichuri", "Dhanmondi Tong", 75, 710, "dinner", false)
     )
+
+    private var dynamicCatalog: MutableList<AiMenuItem> = mutableListOf()
+
+    val menuCatalog: List<AiMenuItem>
+        get() = if (dynamicCatalog.isNotEmpty()) dynamicCatalog else defaultCatalog
+
+    fun updateCatalogFromEntities(entities: List<com.example.nutrimate.data.model.CentralFoodEntity>) {
+        if (entities.isNotEmpty()) {
+            dynamicCatalog = entities.map { entity ->
+                AiMenuItem(
+                    itemId = entity.id,
+                    name = entity.name,
+                    place = entity.place,
+                    priceTk = if (entity.priceTk > 0) entity.priceTk else (entity.pricePaisa / 100).toInt(),
+                    kcal = entity.kcal,
+                    slot = entity.slot,
+                    isPartner = entity.isPartner
+                )
+            }.toMutableList()
+        }
+    }
 
     private val tokenStore = mutableMapOf<String, StoredToken>()
 

@@ -1,10 +1,15 @@
 package com.example.nutrimate.viewmodel
 
+import android.content.Context
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.nutrimate.data.feast.*
+import com.example.nutrimate.data.location.CampusArea
+import com.example.nutrimate.data.location.CampusLocationManager
+import com.example.nutrimate.data.model.CentralFoodEntity
 import com.example.nutrimate.data.model.MealItemEntity
+import com.example.nutrimate.data.model.PartnerRestaurantEntity
 import com.example.nutrimate.data.model.PaymentRecordEntity
 import com.example.nutrimate.data.model.UserProfileEntity
 import com.example.nutrimate.data.repository.NutriMateFirestoreRepository
@@ -46,7 +51,16 @@ data class NutriMateUiState(
     val isSyncingFirestore: Boolean = false,
     val activeTradeoffProposal: TradeoffProposal? = null,
     val showManualMealDialog: Boolean = false,
-    val undoNoticeMessage: String? = null
+    val currentCampusArea: CampusArea = CampusLocationManager.getDefaultArea(),
+    val currentLatitude: Double = 23.7266,
+    val currentLongitude: Double = 90.3925,
+    val nearbyRestaurantsWithDistance: List<com.example.nutrimate.data.model.RestaurantWithDistance> = emptyList(),
+    val nearbyPartnerRestaurants: List<PartnerRestaurantEntity> = CampusLocationManager.getDefaultArea().defaultRestaurants,
+    val nearbyCentralFoods: List<CentralFoodEntity> = CampusLocationManager.getDefaultArea().defaultMeals,
+    val showCampusSelectorDialog: Boolean = false,
+    val isLocatingGps: Boolean = false,
+    val undoNoticeMessage: String? = null,
+    val isAiThinking: Boolean = false
 ) {
     val totalTodayBudget: Int
         get() = mealSlots.sumOf { it.budget }
@@ -91,7 +105,8 @@ class NutriMateViewModel(
         viewModelScope.launch {
             _uiState.update { it.copy(isSyncingFirestore = true) }
             val displayName = Firebase.auth.currentUser?.displayName ?: "Dhruv"
-            repo.seedInitialDataIfEmpty(userId, displayName)
+            val activeArea = _uiState.value.currentCampusArea
+            repo.seedInitialDataIfEmpty(userId, displayName, activeArea)
 
             // Listen to User Profile
             launch {
@@ -135,7 +150,12 @@ class NutriMateViewModel(
                                 if (matched != null) {
                                     slot.copy(
                                         budget = matched.budget,
-                                        targetKcal = matched.targetKcal
+                                        targetKcal = matched.targetKcal,
+                                        options = if (slot.options.any { it.title == matched.selectedTitle }) {
+                                            slot.options
+                                        } else {
+                                            listOf(MealOption(matched.selectedPlace, matched.selectedTitle, "৳${matched.selectedPrice}", matched.selectedPrice, matched.isPartner, matched.discountTag)) + slot.options
+                                        }
                                     )
                                 } else {
                                     slot
@@ -146,74 +166,145 @@ class NutriMateViewModel(
                     }
                 }
             }
+
+            // Listen to Partner Restaurants
+            launch {
+                repo.observePartnerRestaurants().collect { partners ->
+                    if (partners.isNotEmpty()) {
+                        val filtered = partners.filter { it.areaId == _uiState.value.currentCampusArea.id }
+                        _uiState.update { it.copy(nearbyPartnerRestaurants = if (filtered.isNotEmpty()) filtered else partners) }
+                    }
+                }
+            }
+
+            // Listen to Central Foods
+            launch {
+                repo.observeCentralFoods().collect { foods ->
+                    if (foods.isNotEmpty()) {
+                        val filtered = foods.filter { it.areaId == _uiState.value.currentCampusArea.id }
+                        val activeList = if (filtered.isNotEmpty()) filtered else foods
+                        _uiState.update { it.copy(nearbyCentralFoods = activeList) }
+                        aiToolsGatekeeper.updateCatalogFromEntities(activeList)
+                    }
+                }
+            }
+
+            // Listen to Nearby Restaurants collection based on latitude/longitude
+            launch {
+                repo.observeNearbyRestaurants(_uiState.value.currentLatitude, _uiState.value.currentLongitude).collect { nearbyList ->
+                    if (nearbyList.isNotEmpty()) {
+                        _uiState.update { it.copy(nearbyRestaurantsWithDistance = nearbyList) }
+                    }
+                }
+            }
         }
     }
 
     private fun initializeMeals() {
+        val defaultArea = CampusLocationManager.getDefaultArea()
+        val initialMeals = buildSlotsForArea(defaultArea)
         val currentHour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
-        val initialMeals = listOf(
-            MealSlot(
-                id = "breakfast",
-                name = "Breakfast",
-                emoji = "🍳",
-                budget = 35,
-                targetKcal = 450,
-                activeHourLimit = 11,
-                options = listOf(
-                    MealOption("Dhaka Paratha House", "Paratha, egg, tea", "৳35", 35, true, "−10%"),
-                    MealOption("Campus Canteen", "Khichuri combo", "৳38", 38),
-                    MealOption("Tong Stall", "Toast + banana", "৳25", 25)
-                )
-            ),
-            MealSlot(
-                id = "lunch",
-                name = "Lunch",
-                emoji = "🍛",
-                budget = 81,
-                targetKcal = 800,
-                activeHourLimit = 16,
-                options = listOf(
-                    MealOption("Star Kabab & Biriyani", "Chicken rice bowl", "৳75", 75, true, "−10%"),
-                    MealOption("Star Kabab & Biriyani", "Kacchi Biriyani (Feast Upgrade)", "৳120", 120, true, "−10%"),
-                    MealOption("Hall Mess", "Rice, dal, fish", "৳60", 60),
-                    MealOption("Haji Dhaba", "Veg thali", "৳70", 70),
-                    MealOption("Nirala Hotel", "Beef bhuna set", "৳95", 95)
-                )
-            ),
-            MealSlot(
-                id = "snacks",
-                name = "Snacks",
-                emoji = "🥪",
-                budget = 30,
-                targetKcal = 260,
-                activeHourLimit = 19,
-                options = listOf(
-                    MealOption("Fuchka Corner", "Fuchka + chotpoti", "৳30", 30, true, "−5%"),
-                    MealOption("Fruit Cart", "Seasonal fruit", "৳25", 25)
-                )
-            ),
-            MealSlot(
-                id = "dinner",
-                name = "Dinner",
-                emoji = "🍲",
-                budget = 51,
-                targetKcal = 800,
-                activeHourLimit = 24,
-                options = listOf(
-                    MealOption("Biryani Bhaban", "Tehari + salad", "৳51", 51, true, "−10%"),
-                    MealOption("Rooftop Cafe", "Grilled chicken", "৳90", 90),
-                    MealOption("Street Stall", "Egg khichuri", "৳40", 40)
-                )
-            )
-        )
-
         val defaultExpanded = initialMeals.indexOfFirst { currentHour < it.activeHourLimit }.coerceAtLeast(0)
 
         _uiState.update {
             it.copy(
+                currentCampusArea = defaultArea,
+                nearbyPartnerRestaurants = defaultArea.defaultRestaurants,
+                nearbyCentralFoods = defaultArea.defaultMeals,
                 mealSlots = initialMeals,
                 expandedMealIndex = defaultExpanded
             )
+        }
+        aiToolsGatekeeper.updateCatalogFromEntities(defaultArea.defaultMeals)
+    }
+
+    private fun buildSlotsForArea(area: CampusArea): List<MealSlot> {
+        val slots = listOf(
+            Triple("breakfast", "Breakfast", "🍳") to (35 to 11),
+            Triple("lunch", "Lunch", "🍛") to (81 to 16),
+            Triple("snacks", "Snacks", "🥪") to (30 to 19),
+            Triple("dinner", "Dinner", "🍲") to (51 to 24)
+        )
+
+        return slots.map { (slotInfo, budgetAndHour) ->
+            val (id, name, emoji) = slotInfo
+            val (defaultBudget, hourLimit) = budgetAndHour
+            val areaMeals = area.defaultMeals.filter { it.slot.equals(id, ignoreCase = true) }
+
+            val options = areaMeals.map { meal ->
+                MealOption(
+                    place = meal.place,
+                    title = meal.name,
+                    priceStr = "৳${meal.priceTk}",
+                    priceNum = meal.priceTk,
+                    isPartner = meal.isPartner,
+                    discountTag = meal.discountTag
+                )
+            }.ifEmpty {
+                listOf(MealOption("Campus Canteen", "$name combo", "৳$defaultBudget", defaultBudget))
+            }
+
+            val selectedOpt = options.first()
+            MealSlot(
+                id = id,
+                name = name,
+                emoji = emoji,
+                budget = selectedOpt.priceNum,
+                targetKcal = areaMeals.firstOrNull()?.kcal ?: 500,
+                activeHourLimit = hourLimit,
+                options = options,
+                selectedOptionIndex = 0
+            )
+        }
+    }
+
+    fun openCampusSelector() {
+        _uiState.update { it.copy(showCampusSelectorDialog = true) }
+    }
+
+    fun dismissCampusSelector() {
+        _uiState.update { it.copy(showCampusSelectorDialog = false) }
+    }
+
+    fun selectCampusArea(area: CampusArea) {
+        val updatedSlots = buildSlotsForArea(area)
+        _uiState.update {
+            it.copy(
+                currentCampusArea = area,
+                currentLatitude = area.latitude,
+                currentLongitude = area.longitude,
+                nearbyPartnerRestaurants = area.defaultRestaurants,
+                nearbyCentralFoods = area.defaultMeals,
+                mealSlots = updatedSlots,
+                showCampusSelectorDialog = false,
+                undoNoticeMessage = "Switched to ${area.shortName}. Live nearby restaurants & meal catalog updated!"
+            )
+        }
+        aiToolsGatekeeper.updateCatalogFromEntities(area.defaultMeals)
+
+        currentUserId?.let { uid ->
+            repository?.let { repo ->
+                viewModelScope.launch {
+                    repo.seedAreaRestaurantsAndFoods(area)
+                    repo.syncUserMealsWithArea(uid, area)
+                    val nearby = repo.getNearbyRestaurants(area.latitude, area.longitude)
+                    if (nearby.isNotEmpty()) {
+                        _uiState.update { it.copy(nearbyRestaurantsWithDistance = nearby) }
+                    }
+                }
+            }
+        }
+    }
+
+    fun detectLocationAndSetCampus(context: Context) {
+        _uiState.update { it.copy(isLocatingGps = true) }
+        viewModelScope.launch {
+            try {
+                val detected = CampusLocationManager.detectCampusFromDevice(context)
+                selectCampusArea(detected)
+            } finally {
+                _uiState.update { it.copy(isLocatingGps = false) }
+            }
         }
     }
 
@@ -510,7 +601,7 @@ class NutriMateViewModel(
             sender = MessageSender.USER,
             content = userText
         )
-        _uiState.update { it.copy(chatMessages = it.chatMessages + userMsg) }
+        _uiState.update { it.copy(chatMessages = it.chatMessages + userMsg, isAiThinking = true) }
 
         viewModelScope.launch {
             try {
@@ -556,7 +647,7 @@ class NutriMateViewModel(
                 val errorMsg = ChatMessage(
                     id = UUID.randomUUID().toString(),
                     sender = MessageSender.ASSISTANT,
-                    content = "Gemini request timed out after 60 seconds. Please check your network and try again."
+                    content = "Gemini request timed out. Please check your network and try again."
                 )
                 _uiState.update { it.copy(chatMessages = it.chatMessages + errorMsg) }
             } catch (e: CancellationException) {
@@ -569,6 +660,8 @@ class NutriMateViewModel(
                     content = "Gemini API error: ${e.localizedMessage ?: e.javaClass.simpleName}"
                 )
                 _uiState.update { it.copy(chatMessages = it.chatMessages + errorMsg) }
+            } finally {
+                _uiState.update { it.copy(isAiThinking = false) }
             }
         }
     }
@@ -595,12 +688,16 @@ class NutriMateViewModel(
                     content = "gatekeeper.confirm(token=\"${token.take(8)}...\")",
                     toolName = "gatekeeper.confirm",
                     toolArgs = "token=\"${token.take(8)}...\"",
-                    toolResult = "Feast cancelled, remainder returned to U, ${proposal.mealId} allowance updated"
+                    toolResult = "Feast cancelled, remainder returned to U, ${proposal.mealId} allowance updated",
+                    latencyMs = 8L,
+                    isLocalExecution = true
                 )
                 val confirmReply = ChatMessage(
                     id = UUID.randomUUID().toString(),
                     sender = MessageSender.ASSISTANT,
-                    content = "Trade-off confirmed! ${proposal.requestedItemName} is scheduled for ${proposal.mealName}. Friday's feast has been cancelled and the remaining savings returned to your buffer."
+                    content = "Trade-off confirmed! ${proposal.requestedItemName} is scheduled for ${proposal.mealName}. Friday's feast has been cancelled and the remaining savings returned to your buffer.",
+                    latencyMs = 12L,
+                    isLocalExecution = true
                 )
                 _uiState.update { state ->
                     val updatedMessages = state.chatMessages.map {

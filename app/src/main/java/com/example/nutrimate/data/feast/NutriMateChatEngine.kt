@@ -9,165 +9,83 @@ import com.google.firebase.Firebase
 import com.google.firebase.ai.Chat
 import com.google.firebase.ai.GenerativeModel
 import com.google.firebase.ai.ai
-import com.google.firebase.ai.type.Content
-import com.google.firebase.ai.type.FunctionDeclaration
-import com.google.firebase.ai.type.FunctionResponsePart
-import com.google.firebase.ai.type.Schema
-import com.google.firebase.ai.type.Tool
 import com.google.firebase.ai.type.content
 import com.google.firebase.ai.type.generationConfig
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
-import kotlinx.serialization.json.buildJsonArray
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.intOrNull
-import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.put
 import java.util.UUID
 
 private const val TAG = "NutriMateChatEngine"
 
+/**
+ * Production-grade Two-Tier Hybrid AI Engine:
+ * - Tier 1: On-Device Router & Deterministic Gatekeeper (<15ms)
+ *   Locally evaluates budget rules, searches the active campus catalog, and validates tokens
+ *   without waiting for multi-turn cloud round-trips.
+ * - Tier 2: Real Gemini 3.8 Flash (`gemini-3.8-flash`) via Firebase AI Logic
+ *   Maintains persistent multi-turn conversation memory, synthesizes empathetic student trade-offs,
+ *   and answers nutritional questions in Bangladeshi Taka (৳).
+ */
 class NutriMateChatEngine(
     val toolsGatekeeper: NutriMateAiToolsGatekeeper
 ) {
     val onDeviceRouter = NutriMateOnDeviceRouter()
 
     /**
-     * Dedicated single-turn model for Tier 2 synthesis and direct food Q&A.
-     * Executes in 1 single turn (no multi-turn tool loops), delivering answers in <1s.
+     * Dedicated Gemini 3.8 Flash generative model for multi-turn chat and synthesis.
      */
     private val synthesisModel: GenerativeModel by lazy {
         Firebase.ai.generativeModel(
             modelName = "gemini-3.8-flash",
             generationConfig = generationConfig {
-                temperature = 0.3f
+                temperature = 0.35f
             },
             systemInstruction = content {
                 text(
                     """
-                    You are NutriMate AI, a friendly meal planner for university students in Bangladesh on a tight budget.
-                    Keep answers clear, realistic, and strictly under 2 sentences.
-                    Use Taka (৳). Never invent fake meal plan changes that were not passed to you.
+                    You are NutriMate AI, a friendly, encouraging campus budget and meal copilot for university students in Bangladesh.
+                    You know the local campus food landscape well: Dhaka University / Nilkhet, BUET / Palashi, Dhanmondi, Banani, and Uttara.
+                    You always talk in Bangladeshi Taka (৳) and know local student staples like paratha, dim bhaji, cha, khichuri, tehari, kacchi, chicken curry, dal, and shingara.
+                    Keep answers helpful, realistic, budget-conscious, and strictly under 2 to 3 sentences.
+                    If discussing meal plan changes, you know that mathematical calculations, balances, and ledger updates are handled securely by the on-device gatekeeper.
+                    Never invent fake meal plan mutations that were not passed to you.
                     """.trimIndent()
                 )
             }
         )
     }
-    private val model: GenerativeModel by lazy {
-        val searchMenuDecl = FunctionDeclaration(
-            name = "search_menu",
-            description = "Searches the student food catalog for meals matching query, meal slot, or budget.",
-            parameters = mapOf(
-                "query" to Schema.string("Food item name or keyword (e.g. biriyani, paratha, egg, khichuri)"),
-                "slot" to Schema.string("Meal slot: breakfast, lunch, snacks, or dinner"),
-                "max_price_tk" to Schema.integer("Maximum price in Taka")
-            ),
-            optionalParameters = listOf("slot", "max_price_tk")
-        )
 
-        val checkDecl = FunctionDeclaration(
-            name = "check",
-            description = "Read-only dry run checking if a meal fits today's slot budget allowance.",
-            parameters = mapOf(
-                "slot" to Schema.string("Meal slot: breakfast, lunch, snacks, or dinner"),
-                "item_id" to Schema.string("Item ID from search_menu")
-            )
-        )
-
-        val findFundingDecl = FunctionDeclaration(
-            name = "find_funding",
-            description = "Finds funding options when an item exceeds budget (unallocated balance or feast cancellation).",
-            parameters = mapOf(
-                "slot" to Schema.string("Meal slot: breakfast, lunch, snacks, or dinner"),
-                "item_id" to Schema.string("Item ID from search_menu")
-            )
-        )
-
-        val updateDecl = FunctionDeclaration(
-            name = "update",
-            description = "The only write tool. Mutates plan using signed token from check or find_funding.",
-            parameters = mapOf(
-                "token" to Schema.string("Signed authorization token from check or find_funding")
-            )
-        )
-
-        val getAlternativesDecl = FunctionDeclaration(
-            name = "get_alternatives",
-            description = "Returns 2-3 cheaper alternative meals fitting the slot budget.",
-            parameters = mapOf(
-                "slot" to Schema.string("Meal slot: breakfast, lunch, snacks, or dinner"),
-                "max_price_tk" to Schema.integer("Maximum price in Taka")
-            ),
-            optionalParameters = listOf("max_price_tk")
-        )
-
-        val tools = listOf(
-            Tool.functionDeclarations(
-                listOf(searchMenuDecl, checkDecl, findFundingDecl, updateDecl, getAlternativesDecl)
-            )
-        )
-
-        val sysInstruction = content {
-            text(
-                """
-                You are NutriMate AI, a meal planner for students on a tight budget in Bangladesh.
-                The user has a monthly plan: 4 meals a day (breakfast, lunch, snack, dinner) and planned weekend feasts.
-                The user can change this plan by talking or ask normal food/nutrition questions.
-                
-                TWO TYPES OF REQUEST:
-                1. Plan-changing ("swap my lunch to biriyani", "something cheaper for dinner"):
-                   You MUST use tools and change data ONLY through them:
-                   - search_menu(query, slot, max_price_tk)
-                   - check(slot, item_id)
-                   - If check.ok is true: call update(check_token). Once update returns applied, explain in 1 simple sentence.
-                   - If check.ok is false (over_budget): do NOT refuse. Call find_funding(slot, item_id). Choose the option with smallest sacrifice (free unallocated balance first, then feast cancellation). Then call update(option.token).
-                   - If update returns needs_confirmation: explain the trade-off in 1-2 plain sentences ("I can pay for this by cancelling Friday's feast. You'd lose the feast.") and ask the user to confirm using the app's Confirm button. STOP and do NOT call update again!
-                   - If user declines or item not found: call get_alternatives(slot, max_price_tk) and offer them.
-                2. Food questions ("is a protein shake worth it?", "healthy snacks"):
-                   Answer directly in plain text. Do NOT call tools. No data changes. Keep answer realistic for a student in Bangladesh using Taka (৳).
-                
-                CRITICAL CONSTRAINTS:
-                - Never do budget arithmetic yourself.
-                - Never invent prices, item IDs, or tokens.
-                - Never confirm a feast trade-off yourself.
-                - Never claim a change happened unless update returned "applied".
-                - Keep all answers short, encouraging, and clear (1-2 sentences).
-                """.trimIndent()
-            )
-        }
-
-        Firebase.ai.generativeModel(
-            modelName = "gemini-3.8-flash",
-            generationConfig = generationConfig {
-                temperature = 0.2f
-            },
-            tools = tools,
-            systemInstruction = sysInstruction
-        )
-    }
-
+    /**
+     * Multi-turn chat session with Gemini 3.8 Flash preserving conversation history.
+     */
     private var chatSession: Chat? = null
 
     /**
-     * Resets the multi-turn chat session if requested.
+     * Resets or clears the active chat session (e.g. on new day or explicit user reset).
      */
     fun resetChatSession() {
         chatSession = null
     }
 
     /**
-     * Executes real Gemini inference via Firebase AI Logic and handles the
-     * Gemini Function Calling loop deterministically with gatekeeper tools.
+     * Obtains or creates the active multi-turn Chat session.
      */
+    private fun getOrCreateChatSession(): Chat {
+        var session = chatSession
+        if (session == null) {
+            session = synthesisModel.startChat()
+            chatSession = session
+        }
+        return session
+    }
+
     /**
-     * Two-Tier Hybrid Architecture:
-     * - Tier 1: On-Device Router & Classifier handles Step 1 locally in milliseconds.
-     *   Executes search_menu, check, find_funding, and update deterministically without
-     *   waiting for multi-turn cloud round-trips.
-     * - Tier 2: Real Gemini model (via Firebase AI Logic) synthesizes conversational explanations
-     *   for trade-offs or directly answers nutritional inquiries in a single fast hop.
+     * Two-Tier Hybrid Execution Pipeline:
+     * 1. On-device router classifies prompt in ~5-15ms.
+     * 2. If plan mutation: executes search_menu, check, find_funding, and update locally.
+     *    Stamps latency on each monospace tool step card.
+     * 3. If trade-off explanation or food advice is needed: calls Gemini 3.8 Flash in 1 fast hop.
      */
     suspend fun processUserMessage(
         userText: String,
@@ -178,10 +96,11 @@ class NutriMateChatEngine(
         repository: NutriMateFirestoreRepository?,
         onStepGenerated: (ChatMessage) -> Unit
     ): ChatMessage {
+        val totalStart = System.currentTimeMillis()
         val route = onDeviceRouter.classify(userText)
 
         // -------------------------------------------------------------------------
-        // TIER 1: Plan-changing Request (Local Step 1 Execution)
+        // TIER 1: Plan-changing Request (Local Deterministic Execution)
         // -------------------------------------------------------------------------
         if (route.isPlanChange) {
             val slot = route.slot
@@ -189,30 +108,40 @@ class NutriMateChatEngine(
             val maxPrice = route.maxPriceTk
 
             // 1. Instantly execute search_menu locally
+            val tSearchStart = System.currentTimeMillis()
             val searchResults = toolsGatekeeper.searchMenu(query, slot, maxPrice)
+            val searchLatency = (System.currentTimeMillis() - tSearchStart).coerceAtLeast(1L)
+
             val searchBadge = ChatMessage(
                 id = UUID.randomUUID().toString(),
                 sender = MessageSender.FUNCTION_CALL,
                 content = "search_menu(query=\"$query\", slot=\"$slot\")",
                 toolName = "search_menu",
-                toolArgs = "query=\"$query\", slot=\"$slot\"",
+                toolArgs = "query=\"$query\", slot=\"$slot\"" + (if (maxPrice != null) ", max_price_tk=$maxPrice" else ""),
                 toolResult = if (searchResults.isNotEmpty()) {
                     "Found ${searchResults.size} items: ${searchResults.first().name} (৳${searchResults.first().priceTk})"
                 } else {
-                    "No items found"
-                }
+                    "No items found matching \"$query\""
+                },
+                latencyMs = searchLatency,
+                isLocalExecution = true
             )
             onStepGenerated(searchBadge)
 
             if (searchResults.isEmpty()) {
+                val tAltStart = System.currentTimeMillis()
                 val alts = toolsGatekeeper.getAlternatives(slot, maxPrice)
+                val altLatency = (System.currentTimeMillis() - tAltStart).coerceAtLeast(1L)
+
                 val altBadge = ChatMessage(
                     id = UUID.randomUUID().toString(),
                     sender = MessageSender.FUNCTION_CALL,
                     content = "get_alternatives(slot=\"$slot\")",
                     toolName = "get_alternatives",
-                    toolArgs = "slot=\"$slot\"",
-                    toolResult = "${alts.size} alternatives: ${alts.joinToString { "${it.name} (৳${it.priceTk})" }}"
+                    toolArgs = "slot=\"$slot\"" + (if (maxPrice != null) ", max_price_tk=$maxPrice" else ""),
+                    toolResult = "${alts.size} alternatives: ${alts.joinToString { "${it.name} (৳${it.priceTk})" }}",
+                    latencyMs = altLatency,
+                    isLocalExecution = true
                 )
                 onStepGenerated(altBadge)
 
@@ -221,10 +150,12 @@ class NutriMateChatEngine(
                     id = UUID.randomUUID().toString(),
                     sender = MessageSender.ASSISTANT,
                     content = if (query.isNotBlank()) {
-                        "I couldn't find \"$query\" on the campus menu. Here are some alternatives within your budget: $altNames."
+                        "I couldn't find \"$query\" on the current campus menu. Here are some tasty options within your budget: $altNames."
                     } else {
-                        "Here are budget-friendly alternatives for $slot: $altNames."
-                    }
+                        "Here are student-friendly alternatives for $slot: $altNames."
+                    },
+                    latencyMs = System.currentTimeMillis() - totalStart,
+                    isLocalExecution = true
                 )
                 onStepGenerated(assistantMsg)
                 return assistantMsg
@@ -232,7 +163,10 @@ class NutriMateChatEngine(
 
             // 2. Evaluate candidate item with check() locally
             val candidate = searchResults.first()
+            val tCheckStart = System.currentTimeMillis()
             val checkRes = toolsGatekeeper.check(slot, candidate.itemId)
+            val checkLatency = (System.currentTimeMillis() - tCheckStart).coerceAtLeast(1L)
+
             val checkBadge = ChatMessage(
                 id = UUID.randomUUID().toString(),
                 sender = MessageSender.FUNCTION_CALL,
@@ -243,34 +177,47 @@ class NutriMateChatEngine(
                     "ok: true, price=৳${checkRes.priceTk}, allowance=৳${checkRes.slotBudgetTk}"
                 } else {
                     "ok: false, reason=over_budget, short_by=৳${String.format("%.2f", checkRes.shortByTk ?: 0.0)}"
-                }
+                },
+                latencyMs = checkLatency,
+                isLocalExecution = true
             )
             onStepGenerated(checkBadge)
 
             // 3. Within budget: update() and return immediately!
             if (checkRes.ok && checkRes.checkToken != null) {
+                val tUpdateStart = System.currentTimeMillis()
                 val updateRes = toolsGatekeeper.update(checkRes.checkToken, currentSlots, userId, repository)
+                val updateLatency = (System.currentTimeMillis() - tUpdateStart).coerceAtLeast(1L)
+
                 val updateBadge = ChatMessage(
                     id = UUID.randomUUID().toString(),
                     sender = MessageSender.FUNCTION_CALL,
                     content = "update(token=\"${checkRes.checkToken.take(8)}...\")",
                     toolName = "update",
                     toolArgs = "token=\"${checkRes.checkToken.take(8)}...\"",
-                    toolResult = "status: ${updateRes.status}"
+                    toolResult = "status: ${updateRes.status}",
+                    latencyMs = updateLatency,
+                    isLocalExecution = true
                 )
                 onStepGenerated(updateBadge)
 
+                val totalElapsed = System.currentTimeMillis() - totalStart
                 val assistantMsg = ChatMessage(
                     id = UUID.randomUUID().toString(),
                     sender = MessageSender.ASSISTANT,
-                    content = "Updated your $slot to ${candidate.name} (৳${candidate.priceTk}, ${candidate.kcal} kcal). It fits nicely within today's allowance!"
+                    content = "Updated your $slot to ${candidate.name} (৳${candidate.priceTk}, ${candidate.kcal} kcal). It fits nicely within today's allowance!",
+                    latencyMs = totalElapsed,
+                    isLocalExecution = true
                 )
                 onStepGenerated(assistantMsg)
                 return assistantMsg
             }
 
             // 4. Over budget: find_funding() locally
+            val tFundingStart = System.currentTimeMillis()
             val fundingRes = toolsGatekeeper.findFunding(slot, candidate.itemId)
+            val fundingLatency = (System.currentTimeMillis() - tFundingStart).coerceAtLeast(1L)
+
             val fundingBadge = ChatMessage(
                 id = UUID.randomUUID().toString(),
                 sender = MessageSender.FUNCTION_CALL,
@@ -281,7 +228,9 @@ class NutriMateChatEngine(
                     "option: ${fundingRes.options.first().summary}"
                 } else {
                     "no funding available"
-                }
+                },
+                latencyMs = fundingLatency,
+                isLocalExecution = true
             )
             onStepGenerated(fundingBadge)
 
@@ -291,7 +240,9 @@ class NutriMateChatEngine(
                 val assistantMsg = ChatMessage(
                     id = UUID.randomUUID().toString(),
                     sender = MessageSender.ASSISTANT,
-                    content = "Unfortunately ${candidate.name} is over budget (short by ৳${checkRes.shortByTk ?: 0.0}) and there is no unspent balance or feast available. Try: $altNames."
+                    content = "Unfortunately ${candidate.name} is over budget (short by ৳${checkRes.shortByTk ?: 0.0}) and there is no unspent balance or feast available. Try: $altNames.",
+                    latencyMs = System.currentTimeMillis() - totalStart,
+                    isLocalExecution = true
                 )
                 onStepGenerated(assistantMsg)
                 return assistantMsg
@@ -299,44 +250,55 @@ class NutriMateChatEngine(
 
             // Pick option with smallest sacrifice (first option: unallocated balance or nearest feast)
             val bestOption = fundingRes.options.first()
+            val tUpdateStart = System.currentTimeMillis()
             val updateRes = toolsGatekeeper.update(bestOption.token, currentSlots, userId, repository)
+            val updateLatency = (System.currentTimeMillis() - tUpdateStart).coerceAtLeast(1L)
+
             val updateBadge = ChatMessage(
                 id = UUID.randomUUID().toString(),
                 sender = MessageSender.FUNCTION_CALL,
                 content = "update(token=\"${bestOption.token.take(8)}...\")",
                 toolName = "update",
                 toolArgs = "token=\"${bestOption.token.take(8)}...\"",
-                toolResult = "status: ${updateRes.status}"
+                toolResult = "status: ${updateRes.status}",
+                latencyMs = updateLatency,
+                isLocalExecution = true
             )
             onStepGenerated(updateBadge)
 
             if (updateRes.status == "needs_confirmation") {
-                // Tier 2: Generate friendly conversational explanation for the feast trade-off in 1 quick shot
-                val prompt = """
-                    The student wants to eat ${candidate.name} (৳${candidate.priceTk}) for $slot.
-                    It exceeds budget by ৳${bestOption.shortfallTk}.
-                    We can pay for it via this trade-off: ${bestOption.summary}.
-                    Explain this trade-off in 1 or 2 plain, polite sentences:
+                // Tier 2: Generate friendly conversational explanation for the feast trade-off with Gemini 3.8 Flash
+                val synthesisPrompt = """
+                    The student requested: "$userText".
+                    Target meal: ${candidate.name} (৳${candidate.priceTk}) for $slot.
+                    It exceeds daily allowance by ৳${bestOption.shortfallTk}.
+                    Trade-off: ${bestOption.summary}.
+                    Explain this trade-off in 1 or 2 polite, concise sentences:
                     "I can pay for this by cancelling ${bestOption.feastTitle ?: "your upcoming feast"}. You'd lose the feast."
-                    Ask them to confirm using the Confirm button. Keep it under 2 sentences.
+                    Ask them to confirm using the Confirm button. Strictly under 2 sentences.
                 """.trimIndent()
 
+                val tGeminiStart = System.currentTimeMillis()
                 val explanationText = try {
-                    withTimeout(15_000L) {
-                        val resp = synthesisModel.generateContent(prompt)
+                    withTimeout(20_000L) {
+                        val session = getOrCreateChatSession()
+                        val resp = session.sendMessage(synthesisPrompt)
                         resp.text?.takeIf { it.isNotBlank() }
                     }
                 } catch (e: Exception) {
-                    Log.w(TAG, "Tier 2 synthesis timed out or failed, using instant fallback", e)
+                    Log.w(TAG, "Tier 2 synthesis timed out or failed, using local fallback", e)
                     null
                 } ?: "I can pay for this by cancelling ${bestOption.feastTitle ?: "your upcoming feast"}. You'd lose the feast. Please tap Confirm below if you agree."
 
+                val geminiLatency = System.currentTimeMillis() - tGeminiStart
                 val assistantMsg = ChatMessage(
                     id = UUID.randomUUID().toString(),
                     sender = MessageSender.ASSISTANT,
                     content = explanationText,
                     tradeoffToken = bestOption.token,
-                    isPendingConfirmation = true
+                    isPendingConfirmation = true,
+                    latencyMs = geminiLatency,
+                    isLocalExecution = false
                 )
                 onStepGenerated(assistantMsg)
                 return assistantMsg
@@ -344,7 +306,9 @@ class NutriMateChatEngine(
                 val assistantMsg = ChatMessage(
                     id = UUID.randomUUID().toString(),
                     sender = MessageSender.ASSISTANT,
-                    content = "Applied! Funded ৳${bestOption.shortfallTk} from your unallocated monthly balance. Your $slot is now ${candidate.name}!"
+                    content = "Applied! Funded ৳${bestOption.shortfallTk} from your unallocated monthly balance. Your $slot is now ${candidate.name}!",
+                    latencyMs = System.currentTimeMillis() - totalStart,
+                    isLocalExecution = true
                 )
                 onStepGenerated(assistantMsg)
                 return assistantMsg
@@ -352,27 +316,49 @@ class NutriMateChatEngine(
         }
 
         // -------------------------------------------------------------------------
-        // TIER 2: Direct Food / Nutrition / Advice Question (Single Turn, No Tools!)
+        // TIER 2: Multi-Turn Conversational Q&A (Direct Gemini 3.8 Flash Chat Session)
         // -------------------------------------------------------------------------
+        val tCloudStart = System.currentTimeMillis()
         try {
-            val answer = withTimeout(20_000L) {
-                val resp = synthesisModel.generateContent(userText)
+            val answer = withTimeout(25_000L) {
+                val session = getOrCreateChatSession()
+                val resp = session.sendMessage(userText)
                 resp.text?.takeIf { it.isNotBlank() }
-            } ?: "I am here to help with your student meal plan and budget in Bangladesh!"
+            } ?: "I'm here to help with your meals and budget in Bangladesh! You can ask to change any meal or check your budget."
 
+            val cloudLatency = System.currentTimeMillis() - tCloudStart
             val assistantMsg = ChatMessage(
                 id = UUID.randomUUID().toString(),
                 sender = MessageSender.ASSISTANT,
-                content = answer
+                content = answer,
+                latencyMs = cloudLatency,
+                isLocalExecution = false
             )
             onStepGenerated(assistantMsg)
             return assistantMsg
-        } catch (e: Exception) {
-            Log.e(TAG, "Tier 2 generation error, falling back", e)
+        } catch (e: TimeoutCancellationException) {
+            Log.e(TAG, "Gemini 3.8 Flash response timed out", e)
             val assistantMsg = ChatMessage(
                 id = UUID.randomUUID().toString(),
                 sender = MessageSender.ASSISTANT,
-                content = "I'm here to help with your meals and budget in Bangladesh. Ask me to change any meal or check your budget!"
+                content = "Gemini response timed out. Please check your connection and try again.",
+                latencyMs = System.currentTimeMillis() - tCloudStart,
+                isLocalExecution = false
+            )
+            onStepGenerated(assistantMsg)
+            return assistantMsg
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "Tier 2 multi-turn chat error", e)
+            // Re-instantiate session on network/auth error
+            chatSession = null
+            val assistantMsg = ChatMessage(
+                id = UUID.randomUUID().toString(),
+                sender = MessageSender.ASSISTANT,
+                content = "I'm here to help with your student meal plan and budget in Bangladesh. Try asking to swap a meal or check healthy options!",
+                latencyMs = System.currentTimeMillis() - tCloudStart,
+                isLocalExecution = false
             )
             onStepGenerated(assistantMsg)
             return assistantMsg

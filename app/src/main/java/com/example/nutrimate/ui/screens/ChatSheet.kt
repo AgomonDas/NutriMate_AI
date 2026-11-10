@@ -1,5 +1,7 @@
 package com.example.nutrimate.ui.screens
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -11,9 +13,13 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -24,6 +30,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.nutrimate.model.ChatMessage
@@ -42,9 +50,10 @@ fun ChatSheet(
     var inputText by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
 
-    LaunchedEffect(uiState.chatMessages.size) {
-        if (uiState.chatMessages.isNotEmpty()) {
-            listState.animateScrollToItem(uiState.chatMessages.size - 1)
+    LaunchedEffect(uiState.chatMessages.size, uiState.isAiThinking) {
+        if (uiState.chatMessages.isNotEmpty() || uiState.isAiThinking) {
+            val targetIdx = (uiState.chatMessages.size + (if (uiState.isAiThinking) 0 else -1)).coerceAtLeast(0)
+            listState.animateScrollToItem(targetIdx)
         }
     }
 
@@ -76,16 +85,36 @@ fun ChatSheet(
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Column {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = "NutriMate AI",
+                            fontSize = 22.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(MintAccent.copy(alpha = 0.2f))
+                                .border(1.dp, MintAccent.copy(alpha = 0.6f), RoundedCornerShape(8.dp))
+                                .padding(horizontal = 7.dp, vertical = 2.dp)
+                        ) {
+                            Text(
+                                text = "⚡ Hybrid Copilot",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MintAccentGlow
+                            )
+                        }
+                    }
                     Text(
-                        text = "NutriMate AI",
-                        fontSize = 24.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = Color.White
-                    )
-                    Text(
-                        text = "Can check & update your plan in real time",
+                        text = "Deterministic budget ledger · Gemini 3.8 Flash",
                         fontSize = 12.sp,
-                        color = Color.White.copy(alpha = 0.72f)
+                        color = Color.White.copy(alpha = 0.72f),
+                        modifier = Modifier.padding(top = 2.dp)
                     )
                 }
 
@@ -124,6 +153,12 @@ fun ChatSheet(
                         onDeclineTradeoff = { token -> viewModel.declineInChatTradeoff(token) }
                     )
                 }
+
+                if (uiState.isAiThinking) {
+                    item(key = "ai_thinking_indicator") {
+                        AiThinkingBubble()
+                    }
+                }
             }
 
             // Quick suggestion chips
@@ -131,13 +166,14 @@ fun ChatSheet(
                 "🍛 I want biriyani for lunch",
                 "🥪 Swap snack to fruit cart",
                 "💸 Cheaper dinner",
-                "💪 Is protein shake worth it?"
+                "💪 Is protein shake worth it?",
+                "🥘 Khichuri & Dim for dinner"
             )
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .horizontalScroll(rememberScrollState())
-                    .padding(vertical = 8.dp),
+                    .padding(vertical = 6.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 quickChips.forEach { chipText ->
@@ -174,12 +210,21 @@ fun ChatSheet(
                     onValueChange = { inputText = it },
                     placeholder = {
                         Text(
-                            "Message… e.g. I want biriyani for lunch",
+                            "Message… e.g. Swap my lunch to biriyani",
                             color = Color.White.copy(alpha = 0.5f),
                             fontSize = 14.sp
                         )
                     },
                     singleLine = true,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                    keyboardActions = KeyboardActions(
+                        onSend = {
+                            if (inputText.isNotBlank()) {
+                                viewModel.sendChatMessage(inputText)
+                                inputText = ""
+                            }
+                        }
+                    ),
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedTextColor = Color.White,
                         unfocusedTextColor = Color.White,
@@ -259,20 +304,42 @@ fun ChatBubble(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.Start
             ) {
-                Column(modifier = Modifier.widthIn(max = 310.dp)) {
+                Column(modifier = Modifier.widthIn(max = 320.dp)) {
                     GlassBox(
                         modifier = Modifier.fillMaxWidth(),
                         cornerRadius = 18.dp,
                         backgroundColor = Color.White.copy(alpha = 0.14f),
                         borderColor = Color.White.copy(alpha = 0.3f)
                     ) {
-                        Text(
-                            text = message.content,
-                            color = Color.White,
-                            fontSize = 14.sp,
-                            lineHeight = 20.sp,
-                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 11.dp)
-                        )
+                        Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 11.dp)) {
+                            Text(
+                                text = message.content,
+                                color = Color.White,
+                                fontSize = 14.sp,
+                                lineHeight = 20.sp
+                            )
+
+                            if (message.latencyMs != null) {
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.End,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    val tagText = if (message.isLocalExecution) {
+                                        "⚡ ${message.latencyMs}ms · on-device"
+                                    } else {
+                                        "☁️ ${message.latencyMs}ms · Gemini 3.8"
+                                    }
+                                    Text(
+                                        text = tagText,
+                                        fontSize = 10.sp,
+                                        fontFamily = FontFamily.Monospace,
+                                        color = if (message.isLocalExecution) MintAccentGlow else Color.White.copy(alpha = 0.6f)
+                                    )
+                                }
+                            }
+                        }
                     }
 
                     // Inline Trade-off Confirmation Action Box
@@ -346,71 +413,203 @@ fun ChatBubble(
         }
 
         MessageSender.FUNCTION_CALL -> {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.Start
-            ) {
-                val toolIcon = when (message.toolName) {
-                    "search_menu" -> "🔍"
-                    "check" -> "⚖️"
-                    "find_funding" -> "💡"
-                    "update" -> "🔒"
-                    "gatekeeper.confirm" -> "🔓"
-                    "get_alternatives" -> "🥗"
-                    else -> "⚙️"
-                }
+            CollapsibleToolStepCard(message = message)
+        }
+    }
+}
 
-                Box(
-                    modifier = Modifier
-                        .widthIn(max = 330.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(Color(0xFF070E1A))
-                        .border(1.dp, MintAccent.copy(alpha = 0.55f), RoundedCornerShape(12.dp))
-                        .padding(horizontal = 12.dp, vertical = 8.dp)
+/**
+ * Collapsible Monospace Step Card with Latency Tag.
+ * Allows users to inspect deterministic on-device function calls and parameter payloads.
+ */
+@Composable
+fun CollapsibleToolStepCard(
+    message: ChatMessage,
+    modifier: Modifier = Modifier
+) {
+    var isExpanded by remember { mutableStateOf(false) }
+
+    val toolIcon = when (message.toolName) {
+        "search_menu" -> "🔍"
+        "check" -> "⚖️"
+        "find_funding" -> "💡"
+        "update" -> "🔒"
+        "gatekeeper.confirm" -> "🔓"
+        "get_alternatives" -> "🥗"
+        else -> "⚙️"
+    }
+
+    val latencyBadge = when {
+        message.latencyMs != null && message.isLocalExecution -> "⚡ ${message.latencyMs}ms · on-device"
+        message.latencyMs != null && !message.isLocalExecution -> "☁️ ${message.latencyMs}ms · Gemini 3.8"
+        message.isLocalExecution -> "⚡ local"
+        else -> "☁️ cloud"
+    }
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.Start
+    ) {
+        Box(
+            modifier = modifier
+                .widthIn(max = 340.dp)
+                .clip(RoundedCornerShape(14.dp))
+                .background(Color(0xFF070E1A))
+                .border(1.dp, MintAccent.copy(alpha = 0.5f), RoundedCornerShape(14.dp))
+                .clickable { isExpanded = !isExpanded }
+                .padding(horizontal = 12.dp, vertical = 8.dp)
+                .testTag("tool_step_${message.toolName}")
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                // Header Row: Icon, Tool Name, Latency Tag, Expand Chevron
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(text = toolIcon, fontSize = 12.sp)
+                        Text(
+                            text = message.toolName ?: "tool_call",
+                            color = MintAccent,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(
+                                    if (message.isLocalExecution) MintAccent.copy(alpha = 0.18f)
+                                    else Color(0xFF2C3E50).copy(alpha = 0.6f)
+                                )
+                                .padding(horizontal = 6.dp, vertical = 2.dp)
                         ) {
-                            Text(text = toolIcon, fontSize = 12.sp)
                             Text(
-                                text = message.toolName ?: "tool_call",
-                                color = MintAccent,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold,
+                                text = latencyBadge,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = if (message.isLocalExecution) MintAccentGlow else Color.White.copy(alpha = 0.85f),
                                 fontFamily = FontFamily.Monospace
                             )
                         }
 
+                        Icon(
+                            imageVector = if (isExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                            contentDescription = if (isExpanded) "Collapse" else "Expand",
+                            tint = Color.White.copy(alpha = 0.7f),
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                }
+
+                // Summary / Result preview
+                if (message.toolResult != null) {
+                    Text(
+                        text = "↳ ${message.toolResult}",
+                        color = Color.White.copy(alpha = 0.9f),
+                        fontSize = 11.sp,
+                        fontFamily = FontFamily.Monospace,
+                        maxLines = if (isExpanded) Int.MAX_VALUE else 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+
+                // Expanded Details (Args & full content)
+                AnimatedVisibility(visible = isExpanded) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 4.dp),
+                        verticalArrangement = Arrangement.spacedBy(3.dp)
+                    ) {
+                        HorizontalDivider(
+                            color = Color.White.copy(alpha = 0.12f),
+                            thickness = 1.dp,
+                            modifier = Modifier.padding(vertical = 4.dp)
+                        )
+
                         if (message.toolArgs != null) {
                             Text(
                                 text = "args: (${message.toolArgs})",
-                                color = Color.White.copy(alpha = 0.7f),
-                                fontSize = 11.sp,
-                                fontFamily = FontFamily.Monospace,
-                                lineHeight = 14.sp
+                                color = Color.White.copy(alpha = 0.75f),
+                                fontSize = 10.sp,
+                                fontFamily = FontFamily.Monospace
                             )
                         }
 
-                        if (message.toolResult != null) {
-                            Text(
-                                text = "→ ${message.toolResult}",
-                                color = MintAccentGlow,
-                                fontSize = 11.sp,
-                                fontFamily = FontFamily.Monospace,
-                                lineHeight = 14.sp
-                            )
-                        } else {
-                            Text(
-                                text = message.content,
-                                color = MintAccentGlow,
-                                fontSize = 11.sp,
-                                fontFamily = FontFamily.Monospace,
-                                lineHeight = 14.sp
-                            )
-                        }
+                        Text(
+                            text = "content: ${message.content}",
+                            color = MintAccentGlow.copy(alpha = 0.85f),
+                            fontSize = 10.sp,
+                            fontFamily = FontFamily.Monospace
+                        )
                     }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Animated thinking indicator with pulsing dots shown while Gemini/router is processing.
+ */
+@Composable
+fun AiThinkingBubble() {
+    val infiniteTransition = rememberInfiniteTransition(label = "pulse")
+    val alpha1 by infiniteTransition.animateFloat(
+        initialValue = 0.2f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(600, easing = LinearEasing), RepeatMode.Reverse),
+        label = "dot1"
+    )
+    val alpha2 by infiniteTransition.animateFloat(
+        initialValue = 0.2f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(600, delayMillis = 200, easing = LinearEasing), RepeatMode.Reverse),
+        label = "dot2"
+    )
+    val alpha3 by infiniteTransition.animateFloat(
+        initialValue = 0.2f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(600, delayMillis = 400, easing = LinearEasing), RepeatMode.Reverse),
+        label = "dot3"
+    )
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.Start
+    ) {
+        Box(
+            modifier = Modifier
+                .clip(RoundedCornerShape(16.dp))
+                .background(Color(0xFF070E1A))
+                .border(1.dp, MintAccent.copy(alpha = 0.35f), RoundedCornerShape(16.dp))
+                .padding(horizontal = 14.dp, vertical = 9.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = "NutriMate reasoning",
+                    fontSize = 11.sp,
+                    color = Color.White.copy(alpha = 0.8f),
+                    fontFamily = FontFamily.Monospace
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Box(modifier = Modifier.size(6.dp).clip(CircleShape).background(MintAccent.copy(alpha = alpha1)))
+                    Box(modifier = Modifier.size(6.dp).clip(CircleShape).background(MintAccent.copy(alpha = alpha2)))
+                    Box(modifier = Modifier.size(6.dp).clip(CircleShape).background(MintAccent.copy(alpha = alpha3)))
                 }
             }
         }

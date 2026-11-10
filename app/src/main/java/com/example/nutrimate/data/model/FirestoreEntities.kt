@@ -63,12 +63,64 @@ data class PaymentRecordEntity(
 
 @IgnoreExtraProperties
 data class CentralFoodEntity(
-    @DocumentId val id: String = "",
+    @DocumentId val docId: String = "",
+    val id: String = "",
     val name: String = "",
-    val restaurant: String = "",
+    val place: String = "",
+    val priceTk: Int = 0,
     val pricePaisa: Long = 0L,
-    val calories: Int = 0,
-    val mealSlot: String = "lunch",
+    val kcal: Int = 0,
+    val slot: String = "lunch",
     val isPartner: Boolean = false,
-    val discountTag: String = ""
+    val discountTag: String = "",
+    val areaId: String = "buet_palashi",
+    val areaName: String = "BUET & Palashi"
+)
+
+@IgnoreExtraProperties
+data class PartnerRestaurantEntity(
+    @DocumentId val docId: String = "",
+    val id: String = "",
+    val name: String = "",
+    val areaId: String = "buet_palashi",
+    val areaName: String = "BUET & Palashi",
+    val cuisine: String = "Bangladeshi & Biriyani",
+    val discountPercentage: Int = 10,
+    val discountTag: String = "−10% Student OFF",
+    val rating: Double = 4.5,
+    val popularDish: String = "Kacchi Biriyani"
+)
+
+@IgnoreExtraProperties
+data class RestaurantMenuItem(
+    val id: String = "",
+    val name: String = "",
+    val priceTk: Int = 0,
+    val pricePaisa: Long = 0L,
+    val kcal: Int = 0,
+    val slot: String = "lunch",
+    val isVegetarian: Boolean = false,
+    val isAvailable: Boolean = true
+)
+
+@IgnoreExtraProperties
+data class RestaurantEntity(
+    @DocumentId val docId: String = "",
+    val id: String = "",
+    val name: String = "",
+    val latitude: Double = 0.0,
+    val longitude: Double = 0.0,
+    val address: String = "",
+    val cuisine: String = "Bangladeshi",
+    val rating: Double = 4.5,
+    val isPartner: Boolean = false,
+    val discountPercentage: Int = 0,
+    val discountTag: String = "",
+    val menu: List<Map<String, Any>> = emptyList()
+)
+
+data class RestaurantWithDistance(
+    val restaurant: RestaurantEntity,
+    val distanceKm: Double,
+    val distanceFormatted: String
 )
