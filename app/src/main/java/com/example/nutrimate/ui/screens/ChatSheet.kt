@@ -57,6 +57,14 @@ fun ChatSheet(
         }
     }
 
+    // Move and scroll automatically when the software keyboard opens
+    val imeBottom = WindowInsets.ime.getBottom(androidx.compose.ui.platform.LocalDensity.current)
+    LaunchedEffect(imeBottom) {
+        if (imeBottom > 0 && uiState.chatMessages.isNotEmpty()) {
+            listState.animateScrollToItem(uiState.chatMessages.size - 1)
+        }
+    }
+
     Box(
         modifier = modifier
             .fillMaxSize()
@@ -68,6 +76,8 @@ fun ChatSheet(
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
                 .fillMaxHeight(0.92f)
+                .imePadding()
+                .navigationBarsPadding()
                 .clip(RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp))
                 .background(Color(0xFF0F1A30))
                 .border(
@@ -76,7 +86,7 @@ fun ChatSheet(
                     shape = RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp)
                 )
                 .clickable(enabled = false) {} // prevent dismissing when tapping inside
-                .padding(horizontal = 20.dp, vertical = 18.dp)
+                .padding(horizontal = 20.dp, vertical = 14.dp)
         ) {
             // Header
             Row(

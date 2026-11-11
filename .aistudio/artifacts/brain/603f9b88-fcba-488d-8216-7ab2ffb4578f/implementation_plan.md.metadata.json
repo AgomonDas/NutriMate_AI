@@ -1,6 +1,0 @@
-{
-  "summary":  "Complete MVP-quality architectural rewrite plan for NutriMate's 2-Tier Hybrid AI setup, featuring an ultra-fast on-device classifier router, multi-turn Gemini 3.8 Flash conversational memory, collapsible monospace execution step cards with real-time latency badges, and grounded live database integration.",
-  "updatedAt":  "2026-11-10T20:36:36.729688284Z",
-  "requestFeedback":  true,
-  "userFacing":  true
-}

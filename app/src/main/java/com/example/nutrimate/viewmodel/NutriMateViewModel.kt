@@ -34,7 +34,7 @@ private const val TAG = "NutriMateVM"
 data class NutriMateUiState(
     val onboardingCompleted: Boolean = true,
     val onboardingStep: Int = 1,
-    val currentTab: AppNavTab = AppNavTab.TODAY,
+    val currentTab: AppNavTab = AppNavTab.HOME,
     val userGoals: UserGoals = UserGoals(),
     val mealSlots: List<MealSlot> = emptyList(),
     val expandedMealIndex: Int = 1,
@@ -614,7 +614,15 @@ class NutriMateViewModel(
                     userId = currentUserId,
                     repository = repository,
                     onStepGenerated = { stepMsg ->
-                        _uiState.update { it.copy(chatMessages = it.chatMessages + stepMsg) }
+                        _uiState.update { state ->
+                            val existingIndex = state.chatMessages.indexOfFirst { it.id == stepMsg.id }
+                            val updatedList = if (existingIndex >= 0) {
+                                state.chatMessages.toMutableList().apply { set(existingIndex, stepMsg) }
+                            } else {
+                                state.chatMessages + stepMsg
+                            }
+                            state.copy(chatMessages = updatedList)
+                        }
                     }
                 )
 
@@ -643,23 +651,35 @@ class NutriMateViewModel(
                     _uiState.update { it.copy(activeTradeoffProposal = proposal) }
                 }
             } catch (e: TimeoutCancellationException) {
-                Log.e(TAG, "AI generation timed out", e)
-                val errorMsg = ChatMessage(
+                Log.w(TAG, "AI generation timed out, using smart copilot fallback", e)
+                val intelligentContent = chatEngine.generateSmartCopilotResponse(
+                    userText = userText,
+                    currentSlots = _uiState.value.mealSlots,
+                    isVegetarian = _uiState.value.userGoals.isVegetarian
+                )
+                val fallbackMsg = ChatMessage(
                     id = UUID.randomUUID().toString(),
                     sender = MessageSender.ASSISTANT,
-                    content = "Gemini request timed out. Please check your network and try again."
+                    content = intelligentContent,
+                    isLocalExecution = true
                 )
-                _uiState.update { it.copy(chatMessages = it.chatMessages + errorMsg) }
+                _uiState.update { it.copy(chatMessages = it.chatMessages + fallbackMsg) }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                Log.e(TAG, "Chat engine error", e)
-                val errorMsg = ChatMessage(
+                Log.w(TAG, "Chat engine exception, using smart copilot fallback", e)
+                val intelligentContent = chatEngine.generateSmartCopilotResponse(
+                    userText = userText,
+                    currentSlots = _uiState.value.mealSlots,
+                    isVegetarian = _uiState.value.userGoals.isVegetarian
+                )
+                val fallbackMsg = ChatMessage(
                     id = UUID.randomUUID().toString(),
                     sender = MessageSender.ASSISTANT,
-                    content = "Gemini API error: ${e.localizedMessage ?: e.javaClass.simpleName}"
+                    content = intelligentContent,
+                    isLocalExecution = true
                 )
-                _uiState.update { it.copy(chatMessages = it.chatMessages + errorMsg) }
+                _uiState.update { it.copy(chatMessages = it.chatMessages + fallbackMsg) }
             } finally {
                 _uiState.update { it.copy(isAiThinking = false) }
             }

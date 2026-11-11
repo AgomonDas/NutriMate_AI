@@ -76,6 +76,7 @@ data class MonthlyDaySpend(
 )
 
 enum class AppNavTab {
+    HOME,
     TODAY,
     CHAT,
     SCAN,

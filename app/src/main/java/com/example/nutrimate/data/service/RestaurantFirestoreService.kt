@@ -25,6 +25,61 @@ class RestaurantFirestoreService(
      * with exact geographic coordinates and complete menus.
      */
     val DEFAULT_RESTAURANTS: List<RestaurantEntity> = listOf(
+        // KUET & Teligati, Khulna
+        RestaurantEntity(
+            id = "rest_kuet_chuijhal",
+            name = "Chuijhal Hotel & Restora (KUET Gate)",
+            latitude = 22.8980,
+            longitude = 89.5050,
+            address = "Fulbarigate, near KUET Main Gate, Khulna",
+            cuisine = "Khulna Chuijhal & Bengali Rice",
+            rating = 4.8,
+            isPartner = true,
+            discountPercentage = 15,
+            discountTag = "−15% Student OFF",
+            menu = listOf(
+                mapOf("id" to "kj_1", "name" to "Chuijhal Beef with Rice", "priceTk" to 110, "kcal" to 780, "slot" to "lunch", "isVegetarian" to false),
+                mapOf("id" to "kj_2", "name" to "Khulna Duck Bhuna with Ruti", "priceTk" to 90, "kcal" to 720, "slot" to "dinner", "isVegetarian" to false),
+                mapOf("id" to "kj_3", "name" to "Dal & Aloobhorta Thali", "priceTk" to 40, "kcal" to 510, "slot" to "lunch", "isVegetarian" to true),
+                mapOf("id" to "kj_4", "name" to "Egg Khichuri with Salad", "priceTk" to 45, "kcal" to 610, "slot" to "dinner", "isVegetarian" to false)
+            )
+        ),
+        RestaurantEntity(
+            id = "rest_kuet_teligati_tong",
+            name = "Teligati Student Cafe & Tong",
+            latitude = 22.9020,
+            longitude = 89.5010,
+            address = "Teligati Mor, KUET, Khulna",
+            cuisine = "Breakfast & Student Snacks",
+            rating = 4.6,
+            isPartner = true,
+            discountPercentage = 10,
+            discountTag = "−10% Student OFF",
+            menu = listOf(
+                mapOf("id" to "kt_1", "name" to "Paratha, Dim Omelette & Cha", "priceTk" to 30, "kcal" to 420, "slot" to "breakfast", "isVegetarian" to false),
+                mapOf("id" to "kt_2", "name" to "Khulna Dal Puri (2 pcs) & Tea", "priceTk" to 20, "kcal" to 340, "slot" to "breakfast", "isVegetarian" to true),
+                mapOf("id" to "kt_3", "name" to "Shingara (2 pcs) & Spiced Milk Tea", "priceTk" to 15, "kcal" to 250, "slot" to "snacks", "isVegetarian" to true),
+                mapOf("id" to "kt_4", "name" to "Chotpoti & Fuchka Platter", "priceTk" to 30, "kcal" to 280, "slot" to "snacks", "isVegetarian" to true)
+            )
+        ),
+        RestaurantEntity(
+            id = "rest_kuet_canteen",
+            name = "KUET Central Canteen",
+            latitude = 22.9010,
+            longitude = 89.5030,
+            address = "Inside KUET Campus, Khulna",
+            cuisine = "Campus Daily Meals",
+            rating = 4.6,
+            isPartner = true,
+            discountPercentage = 10,
+            discountTag = "−10% Student OFF",
+            menu = listOf(
+                mapOf("id" to "kc_1", "name" to "Chicken Curry Rice Platter", "priceTk" to 60, "kcal" to 650, "slot" to "lunch", "isVegetarian" to false),
+                mapOf("id" to "kc_2", "name" to "Egg Curry, Rice & Dal", "priceTk" to 40, "kcal" to 560, "slot" to "lunch", "isVegetarian" to false),
+                mapOf("id" to "kc_3", "name" to "Mixed Veg Khichuri", "priceTk" to 35, "kcal" to 490, "slot" to "dinner", "isVegetarian" to true)
+            )
+        ),
+
         // BUET & Palashi Hub
         RestaurantEntity(
             id = "rest_star_kabab_palashi",

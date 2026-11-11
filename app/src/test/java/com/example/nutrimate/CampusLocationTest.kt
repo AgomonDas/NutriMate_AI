@@ -13,7 +13,7 @@ class CampusLocationTest {
     @Test
     fun testCampusAreasContainPartnerRestaurantsAndMeals() {
         val areas = CampusLocationManager.CAMPUS_AREAS
-        assertTrue("Must support multiple university campus hubs", areas.size >= 4)
+        assertTrue("Must support 15 university campus hubs across Bangladesh", areas.size >= 15)
 
         for (area in areas) {
             assertTrue("Area ${area.name} must have partner restaurants", area.defaultRestaurants.isNotEmpty())
@@ -32,6 +32,10 @@ class CampusLocationTest {
 
     @Test
     fun testFindClosestCampusArea() {
+        // Test near Teligati (KUET, Khulna)
+        val kuetArea = CampusLocationManager.findClosestArea(22.9006, 89.5024)
+        assertEquals("kuet_khulna", kuetArea.id)
+
         // Test near Palashi (BUET)
         val buetArea = CampusLocationManager.findClosestArea(23.7268, 90.3922)
         assertEquals("buet_palashi", buetArea.id)
@@ -77,13 +81,13 @@ class CampusLocationTest {
 
         // 1. Verify default restaurants dataset
         val restaurants = service.DEFAULT_RESTAURANTS
-        assertTrue("Must have at least 10 seeded restaurants across Dhaka campuses", restaurants.size >= 10)
+        assertTrue("Must have seeded restaurants across Bangladesh campuses", restaurants.size >= 10)
 
         for (restaurant in restaurants) {
             assertTrue("Restaurant ID must be non-empty", restaurant.id.isNotBlank())
             assertTrue("Restaurant Name must be non-empty", restaurant.name.isNotBlank())
-            assertTrue("Latitude must be valid in Dhaka", restaurant.latitude in 23.6..24.0)
-            assertTrue("Longitude must be valid in Dhaka", restaurant.longitude in 90.3..90.6)
+            assertTrue("Latitude must be valid in Bangladesh", restaurant.latitude in 22.0..26.5)
+            assertTrue("Longitude must be valid in Bangladesh", restaurant.longitude in 88.0..93.0)
             assertTrue("Rating must be between 1.0 and 5.0", restaurant.rating in 1.0..5.0)
             assertTrue("Menu must not be empty", restaurant.menu.isNotEmpty())
 
