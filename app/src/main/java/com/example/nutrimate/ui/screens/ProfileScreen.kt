@@ -200,24 +200,6 @@ fun ProfileScreen(
         item {
             Spacer(modifier = Modifier.height(10.dp))
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedButton(
-                    onClick = { viewModel.restartOnboarding() },
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
-                    shape = RoundedCornerShape(16.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(50.dp)
-                        .testTag("restart_onboarding_btn")
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Refresh,
-                        contentDescription = "Restart",
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Re-run Onboarding Setup", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                }
-
                 Button(
                     onClick = {
                         com.google.firebase.auth.FirebaseAuth.getInstance().signOut()

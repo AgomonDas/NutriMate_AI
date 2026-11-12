@@ -1,6 +1,7 @@
 package com.example.nutrimate.data.feast
 
 import android.util.Log
+import com.example.nutrimate.BuildConfig
 import com.example.nutrimate.data.repository.NutriMateFirestoreRepository
 import com.example.nutrimate.model.ChatMessage
 import com.example.nutrimate.model.MealSlot
@@ -31,6 +32,21 @@ class NutriMateChatEngine(
     val toolsGatekeeper: NutriMateAiToolsGatekeeper
 ) {
     val onDeviceRouter = NutriMateOnDeviceRouter()
+
+    /** Last cloud failure, so the UI/logs can show why Gemini did not answer. */
+    @Volatile
+    var lastCloudError: String? = null
+        private set
+
+    private fun describeError(e: Throwable): String = when {
+        e is TimeoutCancellationException -> "timed out waiting for Gemini"
+        e.message?.contains("App Check", ignoreCase = true) == true ||
+            e.message?.contains("403") == true ->
+            "App Check / permission rejected (register debug token or enable Firebase AI Logic)"
+        e.message?.contains("not found", ignoreCase = true) == true ||
+            e.message?.contains("404") == true -> "model not found for this project/backend"
+        else -> e.javaClass.simpleName + ": " + (e.message ?: "unknown")
+    }
 
     /**
      * Dedicated Gemini 3.8 Flash generative model for multi-turn chat and synthesis.
@@ -285,8 +301,16 @@ class NutriMateChatEngine(
                         val resp = session.sendMessage(synthesisPrompt)
                         resp.text?.takeIf { it.isNotBlank() }
                     }
+                } catch (e: CancellationException) {
+                    if (e is TimeoutCancellationException) {
+                        lastCloudError = describeError(e)
+                        Log.e(TAG, "Tier 2 synthesis failed: $lastCloudError", e)
+                        chatSession = null
+                        null
+                    } else throw e
                 } catch (e: Exception) {
-                    Log.w(TAG, "Tier 2 synthesis timed out or failed, using local fallback", e)
+                    lastCloudError = describeError(e)
+                    Log.e(TAG, "Tier 2 synthesis failed: $lastCloudError", e)
                     chatSession = null
                     null
                 } ?: "I can pay for this by cancelling ${bestOption.feastTitle ?: "your upcoming feast"}. You'd lose the feast. Please tap Confirm below if you agree."
@@ -325,7 +349,7 @@ class NutriMateChatEngine(
         var hasEmittedFirstChunk = false
 
         val cloudAnswer: String? = try {
-            withTimeout(4_000L) {
+            withTimeout(45_000L) {
                 val session = getOrCreateChatSession()
                 session.sendMessageStream(userText).collect { chunk ->
                     val chunkText = chunk.text.orEmpty()
@@ -346,13 +370,22 @@ class NutriMateChatEngine(
                 }
                 textAccumulator.toString().takeIf { it.isNotBlank() }
             }
+        } catch (e: CancellationException) {
+            if (e is TimeoutCancellationException) {
+                lastCloudError = describeError(e)
+                Log.e(TAG, "Cloud Gemini failed: $lastCloudError", e)
+                chatSession = null
+                null
+            } else throw e
         } catch (e: Exception) {
-            Log.w(TAG, "Cloud Gemini unavailable or timed out; activating intelligent on-device copilot", e)
+            lastCloudError = describeError(e)
+            Log.e(TAG, "Cloud Gemini failed: $lastCloudError", e)
             chatSession = null
             null
         }
 
         if (cloudAnswer != null && cloudAnswer.isNotBlank()) {
+            lastCloudError = null
             val assistantMsg = ChatMessage(
                 id = assistantMsgId,
                 sender = MessageSender.ASSISTANT,
@@ -377,11 +410,14 @@ class NutriMateChatEngine(
         }
 
         // Seamless Intelligent Student Copilot
-        val intelligentAnswer = generateSmartCopilotResponse(
+        val baseAnswer = generateSmartCopilotResponse(
             userText = userText,
             currentSlots = currentSlots,
             isVegetarian = isVegetarian
         )
+        val intelligentAnswer = if (BuildConfig.DEBUG && lastCloudError != null) {
+            "$baseAnswer\n\n[debug] Gemini unavailable: $lastCloudError"
+        } else baseAnswer
         val assistantMsg = ChatMessage(
             id = assistantMsgId,
             sender = MessageSender.ASSISTANT,

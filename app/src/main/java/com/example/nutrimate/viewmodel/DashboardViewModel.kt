@@ -106,6 +106,7 @@ data class DashboardUiState(
     val filteredDeals: List<DiscountedMealDeal>
         get() {
             return rawDeals
+                .filter { deal -> deal.distanceKm <= 10.0 }
                 .filter { deal ->
                     if (selectedSlotFilter.equals("All", ignoreCase = true)) true
                     else deal.slot.equals(selectedSlotFilter, ignoreCase = true)
@@ -255,14 +256,14 @@ class DashboardViewModel(
                 // Ensure initial seed in Firestore
                 repository.seedAreaRestaurantsAndFoods(campus)
 
-                // Query nearby restaurants from Firestore
-                val nearbyRestaurants = repository.getNearbyRestaurants(userLat, userLon, radiusKm = 25.0)
+                // Query nearby restaurants from Firestore (max 10 km radius)
+                val nearbyRestaurants = repository.getNearbyRestaurants(userLat, userLon, radiusKm = 10.0)
                 val dealsList = mutableListOf<DiscountedMealDeal>()
 
                 val restaurantsToUse = if (nearbyRestaurants.isNotEmpty()) {
-                    nearbyRestaurants
+                    nearbyRestaurants.filter { it.distanceKm <= 10.0 }
                 } else {
-                    // Fall back to default restaurants with calculated distances
+                    // Fall back to default restaurants with calculated distances <= 10 km
                     restaurantService.DEFAULT_RESTAURANTS.map { rest ->
                         val dist = restaurantService.calculateDistanceKm(userLat, userLon, rest.latitude, rest.longitude)
                         com.example.nutrimate.data.model.RestaurantWithDistance(
@@ -270,12 +271,13 @@ class DashboardViewModel(
                             distanceKm = dist,
                             distanceFormatted = restaurantService.formatDistance(dist)
                         )
-                    }.sortedBy { it.distanceKm }
+                    }.filter { it.distanceKm <= 10.0 }.sortedBy { it.distanceKm }
                 }
 
                 for (item in restaurantsToUse) {
                     val rest = item.restaurant
-                    val discountPercent = if (rest.discountPercentage > 0) rest.discountPercentage else 10
+                    if (!rest.isPartner || rest.discountPercentage <= 0) continue
+                    val discountPercent = rest.discountPercentage
                     val discountTag = if (rest.discountTag.isNotBlank()) rest.discountTag else "−$discountPercent% OFF"
 
                     for (m in rest.menu) {

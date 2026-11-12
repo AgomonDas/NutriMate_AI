@@ -26,6 +26,7 @@ data class UserProfileEntity(
     val unallocatedPaisa: Long = 0L,
     val onMessPlan: Boolean = false,
     val dailyCalorieGoal: Int = 2310,
+    val onboardingCompleted: Boolean = false,
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null
 )

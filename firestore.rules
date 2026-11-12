@@ -40,6 +40,7 @@ service cloud.firestore {
              (!('totalSavedFromDiscounts' in data) || (data.totalSavedFromDiscounts is int && data.totalSavedFromDiscounts >= 0)) &&
              (!('unallocatedPaisa' in data) || (data.unallocatedPaisa is int && data.unallocatedPaisa >= 0)) &&
              (!('onMessPlan' in data) || data.onMessPlan is bool) &&
+             (!('onboardingCompleted' in data) || data.onboardingCompleted is bool) &&
              data.dailyCalorieGoal is int && data.dailyCalorieGoal >= 500 && data.dailyCalorieGoal <= 10000;
     }
 
@@ -171,7 +172,7 @@ service cloud.firestore {
                          'isVegetarian', 'allowLocation', 'goesToGym', 'isStudent',
                          'university', 'monthlyBudget', 'totalSpentThisMonth',
                          'totalSavedFromDiscounts', 'unallocatedPaisa', 'onMessPlan',
-                         'dailyCalorieGoal', 'updatedAt'
+                         'dailyCalorieGoal', 'onboardingCompleted', 'updatedAt'
                        ]);
 
       allow delete: if isOwner(userId);

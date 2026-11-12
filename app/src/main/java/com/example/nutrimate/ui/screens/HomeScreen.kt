@@ -117,8 +117,8 @@ fun HomeScreen(
                             letterSpacing = 1.sp
                         )
                         Text(
-                            text = greetingText,
-                            fontSize = 28.sp,
+                            text = "Daily Meal Plan",
+                            fontSize = 26.sp,
                             fontWeight = FontWeight.Bold,
                             color = Color.White,
                             modifier = Modifier.padding(top = 2.dp)
@@ -130,7 +130,7 @@ fun HomeScreen(
                         onClick = { viewModel.openManualMealDialog() },
                         colors = ButtonDefaults.buttonColors(containerColor = MintAccent),
                         shape = RoundedCornerShape(16.dp),
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
                         modifier = Modifier.testTag("open_manual_log_btn")
                     ) {
                         Icon(
@@ -150,33 +150,13 @@ fun HomeScreen(
                 }
             }
 
-            // CAMPUS LOCATION HUB BANNER
-            item {
-                CampusLocationCard(
-                    currentArea = uiState.currentCampusArea,
-                    partnerCount = uiState.nearbyPartnerRestaurants.size,
-                    isLocatingGps = uiState.isLocatingGps,
-                    onChangeClick = { viewModel.openCampusSelector() }
-                )
-            }
-
-            // NEARBY PARTNER RESTAURANTS ROW
-            if (uiState.nearbyRestaurantsWithDistance.isNotEmpty() || uiState.nearbyPartnerRestaurants.isNotEmpty()) {
-                item {
-                    NearbyPartnersRow(
-                        partners = uiState.nearbyPartnerRestaurants,
-                        nearbyWithDistance = uiState.nearbyRestaurantsWithDistance
-                    )
-                }
-            }
-
-            // Hero Card
+            // Daily Allowance Hero Card
             item {
                 GlassBox(
                     modifier = Modifier
                         .fillMaxWidth()
                         .testTag("hero_budget_card"),
-                    cornerRadius = 26.dp
+                    cornerRadius = 24.dp
                 ) {
                     Row(
                         modifier = Modifier
@@ -189,8 +169,9 @@ fun HomeScreen(
 
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = "Today's daily allowance (b)",
+                                text = "Today's Daily Allowance",
                                 fontSize = 12.sp,
+                                fontWeight = FontWeight.Medium,
                                 color = Color.White.copy(alpha = 0.75f)
                             )
                             Text(
@@ -217,7 +198,7 @@ fun HomeScreen(
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text(
-                                    text = "Ledger verified & in budget",
+                                    text = "On track with daily budget",
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.Medium,
                                     color = MintAccentGlow
@@ -432,12 +413,33 @@ fun MealSlotCard(
                 )
 
                 Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = slot.name,
-                        fontSize = 17.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = Color.White
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = slot.name,
+                            fontSize = 17.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                        val activeOpt = slot.activeOption
+                        if (activeOpt.isPartner && activeOpt.discountTag.isNotBlank()) {
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(MintAccent.copy(alpha = 0.2f))
+                                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                            ) {
+                                Text(
+                                    text = activeOpt.discountTag,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MintAccentGlow
+                                )
+                            }
+                        }
+                    }
                     Text(
                         text = "Allowance: ৳${slot.budget} · ${slot.targetKcal} kcal",
                         fontSize = 13.sp,
@@ -479,31 +481,6 @@ fun MealSlotCard(
                             onClick = { onOptionSelect(optIndex) }
                         )
                     }
-
-                    // Feast Upgrade Trigger Button
-                    Button(
-                        onClick = onRequestUpgrade,
-                        colors = ButtonDefaults.buttonColors(containerColor = Color.White.copy(alpha = 0.12f)),
-                        shape = RoundedCornerShape(14.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(44.dp)
-                            .testTag("request_upgrade_${slot.id}")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Star,
-                            contentDescription = "Feast Upgrade",
-                            tint = TagYellow,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = if (slot.id == "lunch") "Upgrade to Kacchi Biriyani (৳120 Feast)" else "Request Feast Upgrade",
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = TagYellow
-                        )
-                    }
                 }
             }
         }
@@ -517,28 +494,23 @@ fun MealOptionItem(
     isSelected: Boolean,
     onClick: () -> Unit
 ) {
-    val bgModifier = if (option.isPartner) {
+    val bgModifier = if (isSelected) {
         Modifier.background(
-            brush = Brush.horizontalGradient(
-                colors = listOf(
-                    MintAccent.copy(alpha = 0.35f),
-                    Color.White.copy(alpha = 0.12f)
-                )
-            ),
-            shape = RoundedCornerShape(18.dp)
+            color = MintAccent.copy(alpha = 0.22f),
+            shape = RoundedCornerShape(16.dp)
         ).border(
             width = 1.dp,
             color = MintAccent.copy(alpha = 0.7f),
-            shape = RoundedCornerShape(18.dp)
+            shape = RoundedCornerShape(16.dp)
         )
     } else {
         Modifier.background(
-            color = Color.White.copy(alpha = 0.1f),
-            shape = RoundedCornerShape(18.dp)
+            color = Color.White.copy(alpha = 0.08f),
+            shape = RoundedCornerShape(16.dp)
         ).border(
             width = 1.dp,
-            color = Color.White.copy(alpha = 0.16f),
-            shape = RoundedCornerShape(18.dp)
+            color = Color.White.copy(alpha = 0.14f),
+            shape = RoundedCornerShape(16.dp)
         )
     }
 
@@ -549,36 +521,64 @@ fun MealOptionItem(
             .clickable(onClick = onClick)
             .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp)
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         Text(text = emoji, fontSize = 22.sp)
 
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = option.place,
+                text = option.title,
                 fontSize = 14.sp,
-                fontWeight = FontWeight.Bold,
+                fontWeight = FontWeight.SemiBold,
                 color = Color.White
             )
-            Text(
-                text = "${option.title} · ${option.priceStr}",
-                fontSize = 12.sp,
-                color = Color.White.copy(alpha = 0.72f)
-            )
-        }
-
-        if (option.isPartner) {
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(TagYellow)
-                    .padding(horizontal = 8.dp, vertical = 3.dp)
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.padding(top = 2.dp)
             ) {
                 Text(
-                    text = "${option.discountTag} PARTNER",
+                    text = option.place,
+                    fontSize = 12.sp,
+                    color = Color.White.copy(alpha = 0.7f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
+                )
+                if (option.isPartner && option.discountTag.isNotBlank()) {
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(MintAccent.copy(alpha = 0.2f))
+                            .border(0.5.dp, MintAccent.copy(alpha = 0.55f), RoundedCornerShape(6.dp))
+                            .padding(horizontal = 6.dp, vertical = 1.dp)
+                    ) {
+                        Text(
+                            text = "${option.discountTag} off",
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MintAccentGlow
+                        )
+                    }
+                }
+            }
+        }
+
+        Column(horizontalAlignment = Alignment.End) {
+            Text(
+                text = option.priceStr,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Bold,
+                color = if (isSelected) MintAccent else Color.White
+            )
+            if (option.isPartner && option.discountTag.isNotBlank()) {
+                val pct = option.discountTag.filter { it.isDigit() }.toIntOrNull() ?: 10
+                val origPrice = if (pct in 1..90) (option.priceNum * 100 / (100 - pct)) else (option.priceNum + 5)
+                Text(
+                    text = "৳$origPrice",
                     fontSize = 10.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = TagYellowText
+                    color = Color.White.copy(alpha = 0.45f),
+                    textDecoration = androidx.compose.ui.text.style.TextDecoration.LineThrough
                 )
             }
         }
@@ -946,7 +946,7 @@ fun CampusAreaSelectorDialog(
                     }
                 }
 
-                Divider(color = Color.White.copy(alpha = 0.15f), modifier = Modifier.padding(vertical = 4.dp))
+                HorizontalDivider(color = Color.White.copy(alpha = 0.15f), modifier = Modifier.padding(vertical = 4.dp))
 
                 LazyColumn(
                     modifier = Modifier

@@ -16,7 +16,8 @@ data class UserGoals(
     val monthlyBudget: Int = 6000,
     val monthlySpent: Int = 2800,
     val onMessPlan: Boolean = false,
-    val dailyCalorieGoal: Int = 2310
+    val dailyCalorieGoal: Int = 2310,
+    val isPhoneVerified: Boolean = false
 ) {
     fun calculateMifflinStJeor(): Int {
         // Mifflin-St Jeor formula for young adult male

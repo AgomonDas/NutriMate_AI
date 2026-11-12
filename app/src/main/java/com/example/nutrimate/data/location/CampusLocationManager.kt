@@ -74,11 +74,11 @@ object CampusLocationManager {
                 PartnerRestaurantEntity("buet_palashi_tong", "buet_palashi_tong", "Palashi Tong & Cha Corner", "buet_palashi", "BUET, Dhaka", "Street Food & Snacks", 15, "−15% Student OFF", 4.6, "Khichuri Dim Combo")
             ),
             defaultMeals = listOf(
-                CentralFoodEntity("buet_b1", "buet_b1", "Paratha, egg, tea", "Dhaka Paratha House", 35, 3500L, 450, "breakfast", true, "−10%", "buet_palashi", "BUET, Dhaka"),
+                CentralFoodEntity("buet_b1", "buet_b1", "Paratha, egg, tea", "Dhaka Paratha House", 35, 3500L, 450, "breakfast", false, "", "buet_palashi", "BUET, Dhaka"),
                 CentralFoodEntity("buet_l1", "buet_l1", "Chicken rice bowl", "Star Kabab & Biriyani", 75, 7500L, 720, "lunch", true, "−10%", "buet_palashi", "BUET, Dhaka"),
                 CentralFoodEntity("buet_l2", "buet_l2", "Kacchi Biriyani", "Star Kabab & Biriyani", 120, 12000L, 850, "lunch", true, "−10%", "buet_palashi", "BUET, Dhaka"),
-                CentralFoodEntity("buet_s1", "buet_s1", "Fuchka + chotpoti", "Palashi Tong & Cha Corner", 30, 3000L, 260, "snacks", true, "−15%", "buet_palashi", "BUET, Dhaka"),
-                CentralFoodEntity("buet_d1", "buet_d1", "Old Dhaka Tehari + salad", "Star Kabab & Biriyani", 55, 5500L, 780, "dinner", true, "−10%", "buet_palashi", "BUET, Dhaka")
+                CentralFoodEntity("buet_s1", "buet_s1", "Fuchka + chotpoti", "Palashi Tong & Cha Corner", 30, 3000L, 260, "snacks", false, "", "buet_palashi", "BUET, Dhaka"),
+                CentralFoodEntity("buet_d1", "buet_d1", "Old Dhaka Tehari + salad", "Royal Biriyani House", 55, 5500L, 780, "dinner", false, "", "buet_palashi", "BUET, Dhaka")
             )
         ),
 
@@ -99,9 +99,9 @@ object CampusLocationManager {
             ),
             defaultMeals = listOf(
                 CentralFoodEntity("du_b1", "du_b1", "Luchi with chhola dal", "Madhur Canteen (DU)", 30, 3000L, 420, "breakfast", true, "−15%", "du_nilkhet", "DU, Dhaka"),
-                CentralFoodEntity("du_l1", "du_l1", "Beef Khichuri special", "Nilkhet Baburchi", 80, 8000L, 780, "lunch", true, "−10%", "du_nilkhet", "DU, Dhaka"),
+                CentralFoodEntity("du_l1", "du_l1", "Beef Khichuri special", "Nilkhet Baburchi", 80, 8000L, 780, "lunch", false, "", "du_nilkhet", "DU, Dhaka"),
                 CentralFoodEntity("du_s1", "du_s1", "TSC Shingara & Cha", "Madhur Canteen (DU)", 15, 1500L, 280, "snacks", true, "−15%", "du_nilkhet", "DU, Dhaka"),
-                CentralFoodEntity("du_d1", "du_d1", "Nilkhet Beef Tehari", "Nilkhet Baburchi", 50, 5000L, 750, "dinner", true, "−10%", "du_nilkhet", "DU, Dhaka")
+                CentralFoodEntity("du_d1", "du_d1", "Nilkhet Beef Tehari", "Nilkhet Baburchi", 50, 5000L, 750, "dinner", false, "", "du_nilkhet", "DU, Dhaka")
             )
         ),
 
@@ -230,11 +230,11 @@ object CampusLocationManager {
                 PartnerRestaurantEntity("dhan_tong_27", "dhan_tong_27", "Dhanmondi 27 Tong", "dhanmondi", "Dhanmondi, Dhaka", "Street Foods", 15, "−15% Student OFF", 4.5, "Cha & Egg Roll")
             ),
             defaultMeals = listOf(
-                CentralFoodEntity("dhan_b1", "dhan_b1", "Beef Nehari with Naan", "Star Kabab Dhanmondi", 45, 4500L, 520, "breakfast", true, "−10%", "dhanmondi", "Dhanmondi, Dhaka"),
+                CentralFoodEntity("dhan_b1", "dhan_b1", "Beef Nehari with Naan", "Star Kabab Dhanmondi", 45, 4500L, 520, "breakfast", false, "", "dhanmondi", "Dhanmondi, Dhaka"),
                 CentralFoodEntity("dhan_l1", "dhan_l1", "Student Chicken Rice Meal", "Dhanmondi 27 Tong", 70, 7000L, 680, "lunch", true, "−15%", "dhanmondi", "Dhanmondi, Dhaka"),
                 CentralFoodEntity("dhan_l2", "dhan_l2", "Bashmati Kacchi (Half)", "Kacchi Bhai Dhanmondi", 130, 13000L, 890, "lunch", true, "−10%", "dhanmondi", "Dhanmondi, Dhaka"),
-                CentralFoodEntity("dhan_s1", "dhan_s1", "Chicken Shawarma Wrap", "Dhanmondi 27 Tong", 60, 6000L, 420, "snacks", true, "−15%", "dhanmondi", "Dhanmondi, Dhaka"),
-                CentralFoodEntity("dhan_d1", "dhan_d1", "Beef Tehari with Borhani", "Kacchi Bhai Dhanmondi", 70, 7000L, 790, "dinner", true, "−10%", "dhanmondi", "Dhanmondi, Dhaka")
+                CentralFoodEntity("dhan_s1", "dhan_s1", "Chicken Shawarma Wrap", "Dhanmondi 27 Tong", 60, 6000L, 420, "snacks", false, "", "dhanmondi", "Dhanmondi, Dhaka"),
+                CentralFoodEntity("dhan_d1", "dhan_d1", "Beef Tehari with Borhani", "Tehari Ghar Sobhanbag", 70, 7000L, 790, "dinner", false, "", "dhanmondi", "Dhanmondi, Dhaka")
             )
         ),
 
@@ -254,9 +254,9 @@ object CampusLocationManager {
             ),
             defaultMeals = listOf(
                 CentralFoodEntity("ban_b1", "ban_b1", "Ruti, Sobji & Egg", "Mohakhali Tong Plaza", 35, 3500L, 420, "breakfast", true, "−15%", "banani_mohakhali", "Banani, Dhaka"),
-                CentralFoodEntity("ban_l1", "ban_l1", "BRACU Student Rice Bowl", "Campus Khichuri Ghar", 75, 7500L, 710, "lunch", true, "−10%", "banani_mohakhali", "Banani, Dhaka"),
+                CentralFoodEntity("ban_l1", "ban_l1", "BRACU Student Rice Bowl", "Campus Khichuri Ghar", 75, 7500L, 710, "lunch", false, "", "banani_mohakhali", "Banani, Dhaka"),
                 CentralFoodEntity("ban_s1", "ban_s1", "Student Chicken Burger", "Mohakhali Tong Plaza", 70, 7000L, 480, "snacks", true, "−15%", "banani_mohakhali", "Banani, Dhaka"),
-                CentralFoodEntity("ban_d1", "ban_d1", "Banani Beef Tehari", "Campus Khichuri Ghar", 65, 6500L, 760, "dinner", true, "−10%", "banani_mohakhali", "Banani, Dhaka")
+                CentralFoodEntity("ban_d1", "ban_d1", "Banani Beef Tehari", "Campus Khichuri Ghar", 65, 6500L, 760, "dinner", false, "", "banani_mohakhali", "Banani, Dhaka")
             )
         ),
 

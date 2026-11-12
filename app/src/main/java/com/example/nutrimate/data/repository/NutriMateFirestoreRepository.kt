@@ -61,7 +61,8 @@ class NutriMateFirestoreRepository(
             "totalSavedFromDiscounts" to profile.totalSavedFromDiscounts,
             "unallocatedPaisa" to profile.unallocatedPaisa,
             "onMessPlan" to profile.onMessPlan,
-            "dailyCalorieGoal" to profile.dailyCalorieGoal
+            "dailyCalorieGoal" to profile.dailyCalorieGoal,
+            "onboardingCompleted" to profile.onboardingCompleted
         )
 
         if (!snapshot.exists()) {

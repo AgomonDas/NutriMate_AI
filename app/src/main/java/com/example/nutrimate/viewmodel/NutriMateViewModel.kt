@@ -1,5 +1,6 @@
 package com.example.nutrimate.viewmodel
 
+import android.app.Activity
 import android.content.Context
 import android.util.Log
 import androidx.lifecycle.ViewModel
@@ -15,6 +16,10 @@ import com.example.nutrimate.data.model.UserProfileEntity
 import com.example.nutrimate.data.repository.NutriMateFirestoreRepository
 import com.example.nutrimate.model.*
 import com.google.firebase.Firebase
+import com.google.firebase.FirebaseException
+import com.google.firebase.auth.PhoneAuthCredential
+import com.google.firebase.auth.PhoneAuthOptions
+import com.google.firebase.auth.PhoneAuthProvider
 import com.google.firebase.auth.auth
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
@@ -24,15 +29,18 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.TimeUnit
 
 private const val TAG = "NutriMateVM"
 
 data class NutriMateUiState(
-    val onboardingCompleted: Boolean = true,
+    val onboardingCompleted: Boolean = false,
+    val isCheckingOnboarding: Boolean = true,
     val onboardingStep: Int = 1,
     val currentTab: AppNavTab = AppNavTab.HOME,
     val userGoals: UserGoals = UserGoals(),
@@ -60,7 +68,10 @@ data class NutriMateUiState(
     val showCampusSelectorDialog: Boolean = false,
     val isLocatingGps: Boolean = false,
     val undoNoticeMessage: String? = null,
-    val isAiThinking: Boolean = false
+    val isAiThinking: Boolean = false,
+    val isSendingOtp: Boolean = false,
+    val phoneAuthStatus: String? = null,
+    val phoneVerificationId: String? = null
 ) {
     val totalTodayBudget: Int
         get() = mealSlots.sumOf { it.budget }
@@ -90,6 +101,11 @@ class NutriMateViewModel(
     val aiToolsGatekeeper = NutriMateAiToolsGatekeeper(gatekeeper)
     val chatEngine = NutriMateChatEngine(aiToolsGatekeeper)
 
+    @Volatile
+    private var sessionOnboardingCompleted: Boolean = false
+    @Volatile
+    private var hasLoadedInitialProfile: Boolean = false
+
     init {
         initializeMeals()
         initializeMonthlyBars()
@@ -97,6 +113,8 @@ class NutriMateViewModel(
 
         if (currentUserId != null && repository != null) {
             connectToFirestore(currentUserId)
+        } else {
+            _uiState.update { it.copy(isCheckingOnboarding = false) }
         }
     }
 
@@ -104,17 +122,31 @@ class NutriMateViewModel(
         val repo = repository ?: return
         viewModelScope.launch {
             _uiState.update { it.copy(isSyncingFirestore = true) }
-            val displayName = Firebase.auth.currentUser?.displayName ?: "Dhruv"
+            val displayName = Firebase.auth.currentUser?.displayName ?: "Student"
             val activeArea = _uiState.value.currentCampusArea
-            repo.seedInitialDataIfEmpty(userId, displayName, activeArea)
+
+            // Safety timeout so onboarding check never hangs indefinitely if offline
+            launch {
+                delay(3_500L)
+                if (_uiState.value.isCheckingOnboarding) {
+                    _uiState.update { it.copy(isCheckingOnboarding = false, isSyncingFirestore = false) }
+                }
+            }
+
+            withTimeoutOrNull(4_000L) {
+                repo.seedInitialDataIfEmpty(userId, displayName, activeArea)
+            }
 
             // Listen to User Profile
             launch {
                 repo.observeUserProfile(userId).collect { profileEntity ->
                     if (profileEntity != null) {
+                        val isDone = profileEntity.onboardingCompleted || sessionOnboardingCompleted
                         _uiState.update { state ->
-                            state.copy(
-                                userGoals = state.userGoals.copy(
+                            // Only overwrite userGoals on first load or once onboarding is completed
+                            // so active typing in onboarding never flickers or snaps back!
+                            val updatedGoals = if (!hasLoadedInitialProfile || isDone) {
+                                state.userGoals.copy(
                                     name = profileEntity.name,
                                     phone = profileEntity.phone,
                                     city = profileEntity.city,
@@ -129,13 +161,30 @@ class NutriMateViewModel(
                                     monthlyBudget = profileEntity.monthlyBudget,
                                     onMessPlan = profileEntity.onMessPlan,
                                     dailyCalorieGoal = profileEntity.dailyCalorieGoal
-                                ),
+                                )
+                            } else {
+                                state.userGoals
+                            }
+                            hasLoadedInitialProfile = true
+                            state.copy(
+                                userGoals = updatedGoals,
                                 totalSpentThisMonth = profileEntity.totalSpentThisMonth,
                                 totalSavedFromDiscounts = profileEntity.totalSavedFromDiscounts,
+                                onboardingCompleted = isDone,
+                                isCheckingOnboarding = false,
                                 isSyncingFirestore = false
                             )
                         }
                         gatekeeper.updateMonthlyBudget(profileEntity.monthlyBudget * 100L)
+                    } else {
+                        hasLoadedInitialProfile = true
+                        _uiState.update { state ->
+                            state.copy(
+                                onboardingCompleted = sessionOnboardingCompleted,
+                                isCheckingOnboarding = false,
+                                isSyncingFirestore = false
+                            )
+                        }
                     }
                 }
             }
@@ -334,17 +383,163 @@ class NutriMateViewModel(
         _uiState.update { it.copy(onboardingStep = step) }
     }
 
-    fun completeOnboarding() {
+    fun previousOnboardingStep(onExitToSignIn: () -> Unit = {}) {
+        if (_uiState.value.onboardingStep > 1) {
+            _uiState.update { it.copy(onboardingStep = it.onboardingStep - 1) }
+        } else {
+            onExitToSignIn()
+        }
+    }
+
+    fun sendFirebasePhoneVerification(activity: Activity, rawPhoneNumber: String) {
+        val clean = rawPhoneNumber.filter { it.isDigit() || it == '+' }
+        val formatted = when {
+            clean.startsWith("+") -> clean
+            clean.startsWith("0") -> "+880" + clean.removePrefix("0")
+            clean.isNotBlank() -> "+880$clean"
+            else -> "+8801712345678"
+        }
+
         _uiState.update {
             it.copy(
-                onboardingCompleted = true,
-                currentTab = AppNavTab.TODAY
+                isSendingOtp = true,
+                phoneAuthStatus = "Sending SMS verification via Firebase to $formatted...",
+                userGoals = it.userGoals.copy(phone = formatted)
             )
         }
+
+        try {
+            val callbacks = object : PhoneAuthProvider.OnVerificationStateChangedCallbacks() {
+                override fun onVerificationCompleted(credential: PhoneAuthCredential) {
+                    val code = credential.smsCode ?: _uiState.value.userGoals.otp
+                    _uiState.update { state ->
+                        state.copy(
+                            isSendingOtp = false,
+                            phoneAuthStatus = "Phone automatically verified via Firebase!",
+                            userGoals = state.userGoals.copy(
+                                phone = formatted,
+                                otp = code,
+                                isPhoneVerified = true
+                            )
+                        )
+                    }
+                }
+
+                override fun onVerificationFailed(e: FirebaseException) {
+                    Log.w(TAG, "Firebase phone verification unavailable: ${e.message}", e)
+                    _uiState.update { state ->
+                        state.copy(
+                            isSendingOtp = false,
+                            phoneAuthStatus = "Firebase SMS isn't enabled on this emulator/project yet. You can still enter your number & continue."
+                        )
+                    }
+                }
+
+                override fun onCodeSent(
+                    verificationId: String,
+                    token: PhoneAuthProvider.ForceResendingToken
+                ) {
+                    _uiState.update { state ->
+                        state.copy(
+                            isSendingOtp = false,
+                            phoneVerificationId = verificationId,
+                            phoneAuthStatus = "6-digit SMS code sent to $formatted.",
+                            userGoals = state.userGoals.copy(phone = formatted)
+                        )
+                    }
+                }
+            }
+
+            val options = PhoneAuthOptions.newBuilder(Firebase.auth)
+                .setPhoneNumber(formatted)
+                .setTimeout(60L, TimeUnit.SECONDS)
+                .setActivity(activity)
+                .setCallbacks(callbacks)
+                .build()
+
+            PhoneAuthProvider.verifyPhoneNumber(options)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error initiating Firebase Phone Auth", e)
+            _uiState.update { state ->
+                state.copy(
+                    isSendingOtp = false,
+                    phoneAuthStatus = "Phone number saved. Tap Verify & continue to proceed."
+                )
+            }
+        }
+    }
+
+    fun verifyOtpAndContinue(phoneNumber: String, enteredOtp: String) {
+        val verificationId = _uiState.value.phoneVerificationId
+        val currentUser = Firebase.auth.currentUser
+        val cleanPhone = phoneNumber.trim().ifBlank { _uiState.value.userGoals.phone }
+        val cleanOtp = enteredOtp.trim()
+
+        if (verificationId != null && cleanOtp.length == 6 && currentUser != null) {
+            try {
+                val credential = PhoneAuthProvider.getCredential(verificationId, cleanOtp)
+                currentUser.linkWithCredential(credential).addOnCompleteListener { task ->
+                    if (task.isSuccessful) {
+                        Log.d(TAG, "Phone credential linked to Firebase user")
+                    } else {
+                        Log.w(TAG, "Phone link fallback: ${task.exception?.message}")
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Phone credential check fallback: ${e.message}")
+            }
+        }
+        _uiState.update { state ->
+            state.copy(
+                onboardingStep = 2,
+                userGoals = state.userGoals.copy(
+                    phone = cleanPhone,
+                    otp = cleanOtp,
+                    isPhoneVerified = verificationId != null || cleanPhone.isNotBlank()
+                )
+            )
+        }
+    }
+
+    /**
+     * Updates user goals in memory only (zero Firestore network calls, zero typing lag).
+     */
+    fun updateGoalsDraft(transform: (UserGoals) -> UserGoals) {
+        _uiState.update {
+            val updated = transform(it.userGoals)
+            it.copy(userGoals = updated)
+        }
+        gatekeeper.updateMonthlyBudget(_uiState.value.userGoals.monthlyBudget * 100L)
+    }
+
+    fun completeOnboarding() {
+        sessionOnboardingCompleted = true
+        _uiState.update { state ->
+            val g = state.userGoals
+            val sanitized = g.copy(
+                name = g.name.trim().ifBlank { "Student" }.take(100),
+                phone = g.phone.trim().take(30),
+                city = g.city.trim().ifBlank { "Dhaka" }.take(100),
+                age = g.age.coerceIn(10, 120),
+                heightCm = g.heightCm.coerceIn(50, 300),
+                weightKg = g.weightKg.coerceIn(20, 400),
+                university = g.university.trim().take(100),
+                monthlyBudget = g.monthlyBudget.coerceAtLeast(0),
+                dailyCalorieGoal = g.calculateMifflinStJeor().coerceIn(500, 10000)
+            )
+            state.copy(
+                userGoals = sanitized,
+                onboardingCompleted = true,
+                isCheckingOnboarding = false,
+                currentTab = AppNavTab.HOME
+            )
+        }
+        gatekeeper.updateMonthlyBudget(_uiState.value.userGoals.monthlyBudget * 100L)
         syncGoalsToFirestore()
     }
 
     fun restartOnboarding() {
+        sessionOnboardingCompleted = false
         _uiState.update {
             it.copy(
                 onboardingCompleted = false,
@@ -365,29 +560,31 @@ class NutriMateViewModel(
     private fun syncGoalsToFirestore() {
         val uid = currentUserId ?: return
         val repo = repository ?: return
-        val goals = _uiState.value.userGoals
+        val g = _uiState.value.userGoals
+        val isOnboardingDone = _uiState.value.onboardingCompleted || sessionOnboardingCompleted
         viewModelScope.launch {
             try {
                 repo.saveUserProfile(
                     UserProfileEntity(
                         userId = uid,
-                        name = goals.name,
-                        phone = goals.phone,
-                        city = goals.city,
-                        age = goals.age,
-                        heightCm = goals.heightCm,
-                        weightKg = goals.weightKg,
-                        isVegetarian = goals.isVegetarian,
-                        allowLocation = goals.allowLocation,
-                        goesToGym = goals.goesToGym,
-                        isStudent = goals.isStudent,
-                        university = goals.university,
-                        monthlyBudget = goals.monthlyBudget,
-                        totalSpentThisMonth = _uiState.value.totalSpentThisMonth,
-                        totalSavedFromDiscounts = _uiState.value.totalSavedFromDiscounts,
-                        unallocatedPaisa = feastState.value.unallocatedPaisa,
-                        onMessPlan = goals.onMessPlan,
-                        dailyCalorieGoal = goals.dailyCalorieGoal
+                        name = g.name.trim().ifBlank { "Student" }.take(100),
+                        phone = g.phone.trim().take(30),
+                        city = g.city.trim().ifBlank { "Dhaka" }.take(100),
+                        age = g.age.coerceIn(10, 120),
+                        heightCm = g.heightCm.coerceIn(50, 300),
+                        weightKg = g.weightKg.coerceIn(20, 400),
+                        isVegetarian = g.isVegetarian,
+                        allowLocation = g.allowLocation,
+                        goesToGym = g.goesToGym,
+                        isStudent = g.isStudent,
+                        university = g.university.trim().take(100),
+                        monthlyBudget = g.monthlyBudget.coerceAtLeast(0),
+                        totalSpentThisMonth = _uiState.value.totalSpentThisMonth.coerceAtLeast(0),
+                        totalSavedFromDiscounts = _uiState.value.totalSavedFromDiscounts.coerceAtLeast(0),
+                        unallocatedPaisa = feastState.value.unallocatedPaisa.coerceAtLeast(0L),
+                        onMessPlan = g.onMessPlan,
+                        dailyCalorieGoal = g.dailyCalorieGoal.coerceIn(500, 10000),
+                        onboardingCompleted = isOnboardingDone
                     )
                 )
             } catch (e: Exception) {
@@ -651,7 +848,7 @@ class NutriMateViewModel(
                     _uiState.update { it.copy(activeTradeoffProposal = proposal) }
                 }
             } catch (e: TimeoutCancellationException) {
-                Log.w(TAG, "AI generation timed out, using smart copilot fallback", e)
+                Log.e(TAG, "AI generation timed out, using smart copilot fallback", e)
                 val intelligentContent = chatEngine.generateSmartCopilotResponse(
                     userText = userText,
                     currentSlots = _uiState.value.mealSlots,
@@ -667,7 +864,7 @@ class NutriMateViewModel(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                Log.w(TAG, "Chat engine exception, using smart copilot fallback", e)
+                Log.e(TAG, "Chat engine exception, using smart copilot fallback", e)
                 val intelligentContent = chatEngine.generateSmartCopilotResponse(
                     userText = userText,
                     currentSlots = _uiState.value.mealSlots,

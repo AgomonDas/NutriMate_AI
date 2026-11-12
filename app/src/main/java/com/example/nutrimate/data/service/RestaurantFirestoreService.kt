@@ -70,9 +70,9 @@ class RestaurantFirestoreService(
             address = "Inside KUET Campus, Khulna",
             cuisine = "Campus Daily Meals",
             rating = 4.6,
-            isPartner = true,
-            discountPercentage = 10,
-            discountTag = "−10% Student OFF",
+            isPartner = false,
+            discountPercentage = 0,
+            discountTag = "",
             menu = listOf(
                 mapOf("id" to "kc_1", "name" to "Chicken Curry Rice Platter", "priceTk" to 60, "kcal" to 650, "slot" to "lunch", "isVegetarian" to false),
                 mapOf("id" to "kc_2", "name" to "Egg Curry, Rice & Dal", "priceTk" to 40, "kcal" to 560, "slot" to "lunch", "isVegetarian" to false),
@@ -107,9 +107,9 @@ class RestaurantFirestoreService(
             address = "Bakshibazar Mor, Dhaka",
             cuisine = "Traditional Breakfast",
             rating = 4.5,
-            isPartner = true,
-            discountPercentage = 10,
-            discountTag = "−10% Student OFF",
+            isPartner = false,
+            discountPercentage = 0,
+            discountTag = "",
             menu = listOf(
                 mapOf("id" to "dph_1", "name" to "Paratha, Dim Bhaji & Cha", "priceTk" to 35, "kcal" to 450, "slot" to "breakfast", "isVegetarian" to false),
                 mapOf("id" to "dph_2", "name" to "Ruti & Mixed Vegetable", "priceTk" to 28, "kcal" to 310, "slot" to "breakfast", "isVegetarian" to true),
@@ -142,9 +142,9 @@ class RestaurantFirestoreService(
             address = "Lalbagh Fort Road, Old Dhaka",
             cuisine = "Old Dhaka Heritage Biriyani",
             rating = 4.8,
-            isPartner = true,
-            discountPercentage = 10,
-            discountTag = "−10% Student OFF",
+            isPartner = false,
+            discountPercentage = 0,
+            discountTag = "",
             menu = listOf(
                 mapOf("id" to "rb_1", "name" to "Old Dhaka Beef Tehari", "priceTk" to 51, "kcal" to 780, "slot" to "dinner", "isVegetarian" to false),
                 mapOf("id" to "rb_2", "name" to "Beef Bhuna Rice Platter", "priceTk" to 95, "kcal" to 820, "slot" to "lunch", "isVegetarian" to false)
@@ -177,9 +177,9 @@ class RestaurantFirestoreService(
             address = "Nilkhet Mor, Baburchi Lane",
             cuisine = "Tehari & Khichuri",
             rating = 4.7,
-            isPartner = true,
-            discountPercentage = 10,
-            discountTag = "−10% Student OFF",
+            isPartner = false,
+            discountPercentage = 0,
+            discountTag = "",
             menu = listOf(
                 mapOf("id" to "nb_1", "name" to "Beef Khichuri Special", "priceTk" to 80, "kcal" to 780, "slot" to "lunch", "isVegetarian" to false),
                 mapOf("id" to "nb_2", "name" to "Nilkhet Kacchi Biriyani", "priceTk" to 115, "kcal" to 840, "slot" to "lunch", "isVegetarian" to false),
@@ -229,9 +229,9 @@ class RestaurantFirestoreService(
             address = "Mirpur Road, Sobhanbag, Dhanmondi",
             cuisine = "Old Dhaka Style Tehari",
             rating = 4.6,
-            isPartner = true,
-            discountPercentage = 10,
-            discountTag = "−10% Student OFF",
+            isPartner = false,
+            discountPercentage = 0,
+            discountTag = "",
             menu = listOf(
                 mapOf("id" to "tg_1", "name" to "Beef Tehari with Borhani", "priceTk" to 70, "kcal" to 790, "slot" to "dinner", "isVegetarian" to false),
                 mapOf("id" to "tg_2", "name" to "Morog Polao & Egg", "priceTk" to 90, "kcal" to 780, "slot" to "lunch", "isVegetarian" to false)
@@ -281,9 +281,9 @@ class RestaurantFirestoreService(
             address = "Wireless Gate, Mohakhali / BRAC University",
             cuisine = "Student Rice Bowls & Khichuri",
             rating = 4.6,
-            isPartner = true,
-            discountPercentage = 10,
-            discountTag = "−10% Student OFF",
+            isPartner = false,
+            discountPercentage = 0,
+            discountTag = "",
             menu = listOf(
                 mapOf("id" to "ck_1", "name" to "BRACU Student Rice Bowl", "priceTk" to 75, "kcal" to 710, "slot" to "lunch", "isVegetarian" to false),
                 mapOf("id" to "ck_2", "name" to "Paratha Omelette Combo", "priceTk" to 35, "kcal" to 450, "slot" to "breakfast", "isVegetarian" to false),
@@ -300,8 +300,10 @@ class RestaurantFirestoreService(
             val collectionRef = db.collection("restaurants")
             if (!force) {
                 val snapshot = collectionRef.limit(1).get().await()
-                if (!snapshot.isEmpty) {
-                    Log.d(TAG, "'restaurants' collection already contains data, skipping seed.")
+                val sampleNonPartner = collectionRef.document("rest_kuet_canteen").get().await()
+                val needsPartnerMigration = sampleNonPartner.exists() && sampleNonPartner.getBoolean("isPartner") == true
+                if (!snapshot.isEmpty && !needsPartnerMigration) {
+                    Log.d(TAG, "'restaurants' collection already up-to-date, skipping seed.")
                     return true
                 }
             }

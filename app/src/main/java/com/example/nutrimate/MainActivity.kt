@@ -82,39 +82,41 @@ class MainActivity : ComponentActivity() {
                         }
                     )
                 } else {
-                    // Authenticated App Session
-                    val gatekeeper = remember(user.uid) {
-                        com.example.nutrimate.data.feast.FeastBudgetGatekeeper(firestore, 700_000L)
+                    // Authenticated App Session scoped by user UID
+                    key(user.uid) {
+                        val gatekeeper = remember(user.uid) {
+                            com.example.nutrimate.data.feast.FeastBudgetGatekeeper(firestore, 700_000L)
+                        }
+                        val viewModel: NutriMateViewModel = viewModel(
+                            key = user.uid,
+                            factory = viewModelFactory {
+                                initializer {
+                                    NutriMateViewModel(
+                                        repository = repository,
+                                        currentUserId = user.uid,
+                                        gatekeeper = gatekeeper
+                                    )
+                                }
+                            }
+                        )
+
+                        val dashboardViewModel: DashboardViewModel = viewModel(
+                            key = user.uid + "_dash",
+                            factory = viewModelFactory {
+                                initializer {
+                                    DashboardViewModel(
+                                        repository = repository,
+                                        currentUserId = user.uid
+                                    )
+                                }
+                            }
+                        )
+
+                        AppContent(
+                            viewModel = viewModel,
+                            dashboardViewModel = dashboardViewModel
+                        )
                     }
-                    val viewModel: NutriMateViewModel = viewModel(
-                        key = user.uid,
-                        factory = viewModelFactory {
-                            initializer {
-                                NutriMateViewModel(
-                                    repository = repository,
-                                    currentUserId = user.uid,
-                                    gatekeeper = gatekeeper
-                                )
-                            }
-                        }
-                    )
-
-                    val dashboardViewModel: DashboardViewModel = viewModel(
-                        key = user.uid + "_dash",
-                        factory = viewModelFactory {
-                            initializer {
-                                DashboardViewModel(
-                                    repository = repository,
-                                    currentUserId = user.uid
-                                )
-                            }
-                        }
-                    )
-
-                    AppContent(
-                        viewModel = viewModel,
-                        dashboardViewModel = dashboardViewModel
-                    )
                 }
             }
         }
@@ -190,9 +192,17 @@ fun AppContent(
                     .statusBarsPadding()
             }
         ) {
-            if (!uiState.onboardingCompleted) {
+            if (uiState.isCheckingOnboarding) {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    CircularProgressIndicator(color = MintAccent)
+                }
+            } else if (!uiState.onboardingCompleted) {
                 OnboardingScreen(
                     viewModel = viewModel,
+                    onSignOut = { Firebase.auth.signOut() },
                     modifier = Modifier.fillMaxSize()
                 )
             } else {
@@ -283,23 +293,22 @@ fun NutriMateBottomNavBar(
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .height(70.dp)
-            .shadow(16.dp, RoundedCornerShape(36.dp), ambientColor = Color.Black.copy(alpha = 0.5f))
-            .clip(RoundedCornerShape(36.dp))
-            .background(Color(0xD90E182E))
+            .height(64.dp)
+            .shadow(16.dp, RoundedCornerShape(32.dp), ambientColor = Color.Black.copy(alpha = 0.5f))
+            .clip(RoundedCornerShape(32.dp))
+            .background(Color(0xE60E182E))
             .border(
                 width = 1.dp,
                 brush = Brush.verticalGradient(
                     listOf(Color.White.copy(alpha = 0.35f), Color.White.copy(alpha = 0.1f))
                 ),
-                shape = RoundedCornerShape(36.dp)
+                shape = RoundedCornerShape(32.dp)
             )
-            .padding(horizontal = 8.dp),
+            .padding(horizontal = 6.dp, vertical = 4.dp),
         contentAlignment = Alignment.Center
     ) {
         Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceEvenly,
+            modifier = Modifier.fillMaxSize(),
             verticalAlignment = Alignment.CenterVertically
         ) {
             // 1. Home
@@ -308,40 +317,57 @@ fun NutriMateBottomNavBar(
                 label = "Home",
                 isSelected = currentTab == AppNavTab.HOME,
                 onClick = { onTabSelected(AppNavTab.HOME) },
+                modifier = Modifier.weight(1f),
                 testTag = "nav_home"
             )
 
-            // 2. Plan (former Today)
+            // 2. Plan
             NavBarItem(
                 icon = Icons.Default.RestaurantMenu,
                 label = "Plan",
                 isSelected = currentTab == AppNavTab.TODAY,
                 onClick = { onTabSelected(AppNavTab.TODAY) },
+                modifier = Modifier.weight(1f),
                 testTag = "nav_plan"
             )
 
-            // 3. Center floating Scan button
-            Box(
+            // 3. Center Scan Action
+            Column(
                 modifier = Modifier
-                    .size(52.dp)
-                    .offset(y = (-4).dp)
-                    .shadow(12.dp, CircleShape)
-                    .clip(CircleShape)
-                    .background(
-                        brush = Brush.verticalGradient(
-                            listOf(Color(0xFFB9FFD7), Color(0xFF34D98A))
-                        )
-                    )
-                    .border(1.dp, Color.White, CircleShape)
+                    .weight(1f)
+                    .fillMaxHeight()
+                    .clip(RoundedCornerShape(16.dp))
                     .clickable(onClick = onScanClick)
+                    .padding(vertical = 2.dp)
                     .testTag("nav_scan_qr"),
-                contentAlignment = Alignment.Center
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
             ) {
-                Icon(
-                    imageVector = Icons.Default.QrCodeScanner,
-                    contentDescription = "Scan QR",
-                    tint = MintAccentDark,
-                    modifier = Modifier.size(26.dp)
+                Box(
+                    modifier = Modifier
+                        .size(width = 36.dp, height = 28.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(
+                            brush = Brush.verticalGradient(
+                                listOf(Color(0xFFB9FFD7), Color(0xFF34D98A))
+                            )
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.QrCodeScanner,
+                        contentDescription = "Scan",
+                        tint = MintAccentDark,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = "Scan",
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Color(0xFF7CE7AC),
+                    maxLines = 1
                 )
             }
 
@@ -351,6 +377,7 @@ fun NutriMateBottomNavBar(
                 label = "Ask AI",
                 isSelected = false,
                 onClick = { onTabSelected(AppNavTab.CHAT) },
+                modifier = Modifier.weight(1f),
                 testTag = "nav_chat"
             )
 
@@ -360,6 +387,7 @@ fun NutriMateBottomNavBar(
                 label = "Month",
                 isSelected = currentTab == AppNavTab.MONTH,
                 onClick = { onTabSelected(AppNavTab.MONTH) },
+                modifier = Modifier.weight(1f),
                 testTag = "nav_month"
             )
 
@@ -369,6 +397,7 @@ fun NutriMateBottomNavBar(
                 label = "Me",
                 isSelected = currentTab == AppNavTab.ME,
                 onClick = { onTabSelected(AppNavTab.ME) },
+                modifier = Modifier.weight(1f),
                 testTag = "nav_me"
             )
         }
@@ -386,24 +415,35 @@ fun NavBarItem(
 ) {
     Column(
         modifier = modifier
-            .clip(RoundedCornerShape(14.dp))
+            .fillMaxHeight()
+            .clip(RoundedCornerShape(16.dp))
             .clickable(onClick = onClick)
-            .padding(horizontal = 6.dp, vertical = 4.dp)
+            .padding(vertical = 2.dp)
             .testTag(testTag),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = label,
-            tint = if (isSelected) MintAccent else Color.White.copy(alpha = 0.65f),
-            modifier = Modifier.size(20.dp)
-        )
+        Box(
+            modifier = Modifier
+                .size(width = 36.dp, height = 28.dp)
+                .clip(RoundedCornerShape(14.dp))
+                .background(if (isSelected) MintAccent.copy(alpha = 0.2f) else Color.Transparent),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = label,
+                tint = if (isSelected) MintAccent else Color.White.copy(alpha = 0.65f),
+                modifier = Modifier.size(20.dp)
+            )
+        }
+        Spacer(modifier = Modifier.height(2.dp))
         Text(
             text = label,
             fontSize = 10.sp,
-            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-            color = if (isSelected) MintAccent else Color.White.copy(alpha = 0.65f)
+            fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+            color = if (isSelected) MintAccent else Color.White.copy(alpha = 0.65f),
+            maxLines = 1
         )
     }
 }
