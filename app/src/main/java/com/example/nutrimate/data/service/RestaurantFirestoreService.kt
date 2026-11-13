@@ -289,6 +289,328 @@ class RestaurantFirestoreService(
                 mapOf("id" to "ck_2", "name" to "Paratha Omelette Combo", "priceTk" to 35, "kcal" to 450, "slot" to "breakfast", "isVegetarian" to false),
                 mapOf("id" to "ck_3", "name" to "Egg Khichuri & Salad", "priceTk" to 45, "kcal" to 600, "slot" to "dinner", "isVegetarian" to false)
             )
+        ),
+
+        // RUET, Rajshahi
+        RestaurantEntity(
+            id = "rest_ruet_kalai_ruti",
+            name = "Kalai Ruti Ghar (Kazla)",
+            latitude = 24.3642,
+            longitude = 88.6295,
+            address = "Kazla Gate, RUET, Rajshahi",
+            cuisine = "Traditional Kalai Ruti",
+            rating = 4.8,
+            isPartner = true,
+            discountPercentage = 15,
+            discountTag = "−15% Student OFF",
+            menu = listOf(
+                mapOf("id" to "rkr_1", "name" to "Kalai Ruti with Begun Bhorta", "priceTk" to 25, "kcal" to 380, "slot" to "breakfast", "isVegetarian" to true),
+                mapOf("id" to "rkr_2", "name" to "Kalai Ruti with Duck Bhuna", "priceTk" to 75, "kcal" to 740, "slot" to "dinner", "isVegetarian" to false)
+            )
+        ),
+        RestaurantEntity(
+            id = "rest_ruet_talaimari",
+            name = "Talaimari Student Hotel",
+            latitude = 24.3621,
+            longitude = 88.6258,
+            address = "Talaimari Mor, Rajshahi",
+            cuisine = "Rice & Curry",
+            rating = 4.5,
+            isPartner = true,
+            discountPercentage = 10,
+            discountTag = "−10% Student OFF",
+            menu = listOf(
+                mapOf("id" to "rth_1", "name" to "Rajshahi Chicken Rice Meal", "priceTk" to 65, "kcal" to 670, "slot" to "lunch", "isVegetarian" to false),
+                mapOf("id" to "rth_2", "name" to "Rajshahi Samucha & Tea", "priceTk" to 15, "kcal" to 240, "slot" to "snacks", "isVegetarian" to true)
+            )
+        ),
+
+        // CUET, Chittagong
+        RestaurantEntity(
+            id = "rest_cuet_mezbani",
+            name = "Chittagong Mezbani House",
+            latitude = 22.4618,
+            longitude = 91.9722,
+            address = "Pahartoli Bazar, CUET Gate, Chittagong",
+            cuisine = "Mezbani Beef & Rice",
+            rating = 4.9,
+            isPartner = true,
+            discountPercentage = 15,
+            discountTag = "−15% Student OFF",
+            menu = listOf(
+                mapOf("id" to "cmz_1", "name" to "Chittagong Mezbani Beef Platter", "priceTk" to 115, "kcal" to 820, "slot" to "lunch", "isVegetarian" to false),
+                mapOf("id" to "cmz_2", "name" to "Kala Bhuna with Rice", "priceTk" to 95, "kcal" to 760, "slot" to "dinner", "isVegetarian" to false)
+            )
+        ),
+        RestaurantEntity(
+            id = "rest_cuet_pahartoli",
+            name = "Pahartoli Student Cafe",
+            latitude = 22.4596,
+            longitude = 91.9704,
+            address = "Kaptai Road, CUET, Chittagong",
+            cuisine = "Breakfast & Snacks",
+            rating = 4.5,
+            isPartner = true,
+            discountPercentage = 10,
+            discountTag = "−10% Student OFF",
+            menu = listOf(
+                mapOf("id" to "cps_1", "name" to "Paratha, Dim & Milk Tea", "priceTk" to 30, "kcal" to 430, "slot" to "breakfast", "isVegetarian" to false)
+            )
+        ),
+
+        // CU, Chittagong
+        RestaurantEntity(
+            id = "rest_cu_jhupri",
+            name = "CU Jhupri Student Canteen",
+            latitude = 22.4720,
+            longitude = 91.7885,
+            address = "Arts Jhupri, University of Chittagong",
+            cuisine = "Campus Dining",
+            rating = 4.6,
+            isPartner = true,
+            discountPercentage = 10,
+            discountTag = "−10% Student OFF",
+            menu = listOf(
+                mapOf("id" to "cuj_1", "name" to "Luchi & Boot Dal", "priceTk" to 25, "kcal" to 390, "slot" to "breakfast", "isVegetarian" to true),
+                mapOf("id" to "cuj_2", "name" to "Jhupri Special Chicken Rice", "priceTk" to 60, "kcal" to 640, "slot" to "lunch", "isVegetarian" to false)
+            )
+        ),
+        RestaurantEntity(
+            id = "rest_cu_gate1",
+            name = "Gate 1 Mezbani Hotel",
+            latitude = 22.4695,
+            longitude = 91.7845,
+            address = "1 No Gate, Hathazari, Chittagong",
+            cuisine = "Local Meals",
+            rating = 4.7,
+            isPartner = true,
+            discountPercentage = 10,
+            discountTag = "−10% Student OFF",
+            menu = listOf(
+                mapOf("id" to "cug_1", "name" to "Chittagong Beef Tehari", "priceTk" to 65, "kcal" to 730, "slot" to "dinner", "isVegetarian" to false)
+            )
+        ),
+
+        // RU, Rajshahi
+        RestaurantEntity(
+            id = "rest_ru_tukitaki",
+            name = "Tukitaki Chattar Cafe",
+            latitude = 24.3712,
+            longitude = 88.6371,
+            address = "Tukitaki Chattar, University of Rajshahi",
+            cuisine = "Student Snacks",
+            rating = 4.6,
+            isPartner = true,
+            discountPercentage = 10,
+            discountTag = "−10% Student OFF",
+            menu = listOf(
+                mapOf("id" to "rut_1", "name" to "Kalai Ruti & Morich Bhorta", "priceTk" to 25, "kcal" to 370, "slot" to "breakfast", "isVegetarian" to true),
+                mapOf("id" to "rut_2", "name" to "Tukitaki Cha & Shingara", "priceTk" to 15, "kcal" to 230, "slot" to "snacks", "isVegetarian" to true)
+            )
+        ),
+        RestaurantEntity(
+            id = "rest_ru_station",
+            name = "RU Station View Hotel",
+            latitude = 24.3689,
+            longitude = 88.6345,
+            address = "Station Bazar Gate, Rajshahi",
+            cuisine = "Rice & Meat",
+            rating = 4.5,
+            isPartner = true,
+            discountPercentage = 10,
+            discountTag = "−10% Student OFF",
+            menu = listOf(
+                mapOf("id" to "rus_1", "name" to "Chicken Khichuri Platter", "priceTk" to 65, "kcal" to 680, "slot" to "lunch", "isVegetarian" to false),
+                mapOf("id" to "rus_2", "name" to "RU Hall Special Beef Meal", "priceTk" to 70, "kcal" to 740, "slot" to "dinner", "isVegetarian" to false)
+            )
+        ),
+
+        // SUST, Sylhet
+        RestaurantEntity(
+            id = "rest_sust_shatkora",
+            name = "Sylhet Shatkora Restora",
+            latitude = 24.9165,
+            longitude = 91.8330,
+            address = "Akhalia Mor, SUST Gate, Sylhet",
+            cuisine = "Sylheti Cuisine",
+            rating = 4.8,
+            isPartner = true,
+            discountPercentage = 15,
+            discountTag = "−15% Student OFF",
+            menu = listOf(
+                mapOf("id" to "ssr_1", "name" to "Shatkora Beef Rice Bowl", "priceTk" to 95, "kcal" to 770, "slot" to "lunch", "isVegetarian" to false),
+                mapOf("id" to "ssr_2", "name" to "Akhni Polao & Egg", "priceTk" to 75, "kcal" to 710, "slot" to "dinner", "isVegetarian" to false)
+            )
+        ),
+        RestaurantEntity(
+            id = "rest_sust_canteen",
+            name = "SUST Central Canteen",
+            latitude = 24.9182,
+            longitude = 91.8315,
+            address = "SUST Campus Canteen, Sylhet",
+            cuisine = "Campus Meals",
+            rating = 4.5,
+            isPartner = true,
+            discountPercentage = 10,
+            discountTag = "−10% Student OFF",
+            menu = listOf(
+                mapOf("id" to "scc_1", "name" to "Chicken Khichuri with Salad", "priceTk" to 60, "kcal" to 690, "slot" to "dinner", "isVegetarian" to false),
+                mapOf("id" to "scc_2", "name" to "Paratha, Dim Omelette & Sylheti Tea", "priceTk" to 30, "kcal" to 420, "slot" to "breakfast", "isVegetarian" to false),
+                mapOf("id" to "scc_3", "name" to "Chana Chotpoti & Lemon Cha", "priceTk" to 25, "kcal" to 260, "slot" to "snacks", "isVegetarian" to true)
+            )
+        ),
+
+        // Uttara, Dhaka
+        RestaurantEntity(
+            id = "rest_uttara_canteen",
+            name = "Uttara Student Canteen",
+            latitude = 23.8768,
+            longitude = 90.3802,
+            address = "Sector 10, Uttara, Dhaka",
+            cuisine = "Bangladeshi & Rice",
+            rating = 4.6,
+            isPartner = true,
+            discountPercentage = 15,
+            discountTag = "−15% Student OFF",
+            menu = listOf(
+                mapOf("id" to "usc_1", "name" to "Paratha, Dim Bhaji & Cha", "priceTk" to 35, "kcal" to 440, "slot" to "breakfast", "isVegetarian" to false),
+                mapOf("id" to "usc_2", "name" to "Chicken Khichuri Platter", "priceTk" to 70, "kcal" to 690, "slot" to "lunch", "isVegetarian" to false),
+                mapOf("id" to "usc_3", "name" to "Singara (2 pcs) + Cha", "priceTk" to 20, "kcal" to 270, "slot" to "snacks", "isVegetarian" to true)
+            )
+        ),
+        RestaurantEntity(
+            id = "rest_uttara_kacchi",
+            name = "Uttara Kacchi Palace",
+            latitude = 23.8745,
+            longitude = 90.3788,
+            address = "Sector 7, Uttara, Dhaka",
+            cuisine = "Biriyani",
+            rating = 4.7,
+            isPartner = true,
+            discountPercentage = 10,
+            discountTag = "−10% Student OFF",
+            menu = listOf(
+                mapOf("id" to "ukp_1", "name" to "Tehari with Salad", "priceTk" to 55, "kcal" to 740, "slot" to "dinner", "isVegetarian" to false)
+            )
+        ),
+
+        // JU, Savar
+        RestaurantEntity(
+            id = "rest_ju_bottola",
+            name = "Bottola Student Khichuri",
+            latitude = 23.8824,
+            longitude = 90.2681,
+            address = "Bottola Market, JU, Savar",
+            cuisine = "Traditional Rice & Vorta",
+            rating = 4.8,
+            isPartner = true,
+            discountPercentage = 15,
+            discountTag = "−15% Student OFF",
+            menu = listOf(
+                mapOf("id" to "jb_1", "name" to "Bottola Khichuri & Egg", "priceTk" to 30, "kcal" to 410, "slot" to "breakfast", "isVegetarian" to false),
+                mapOf("id" to "jb_2", "name" to "Bottola 5 Vortas with Rice", "priceTk" to 40, "kcal" to 540, "slot" to "lunch", "isVegetarian" to true),
+                mapOf("id" to "jb_3", "name" to "Chicken Bhuna & Rice", "priceTk" to 60, "kcal" to 660, "slot" to "dinner", "isVegetarian" to false)
+            )
+        ),
+
+        // JnU, Old Dhaka
+        RestaurantEntity(
+            id = "rest_jnu_bismillah",
+            name = "Bismillah Kabab Ghar",
+            latitude = 23.7082,
+            longitude = 90.4095,
+            address = "Victoria Park, Old Dhaka",
+            cuisine = "Old Dhaka Chaap & Naan",
+            rating = 4.7,
+            isPartner = true,
+            discountPercentage = 10,
+            discountTag = "−10% Student OFF",
+            menu = listOf(
+                mapOf("id" to "jbg_1", "name" to "Old Dhaka Beef Tehari", "priceTk" to 60, "kcal" to 750, "slot" to "lunch", "isVegetarian" to false),
+                mapOf("id" to "jbg_2", "name" to "Beef Chaap with Rumali Ruti", "priceTk" to 75, "kcal" to 780, "slot" to "dinner", "isVegetarian" to false)
+            )
+        ),
+        RestaurantEntity(
+            id = "rest_jnu_beauty_lassi",
+            name = "Beauty Lassi & Faluda",
+            latitude = 23.7094,
+            longitude = 90.4112,
+            address = "Johnson Road, Old Dhaka",
+            cuisine = "Heritage Desserts & Cha",
+            rating = 4.9,
+            isPartner = true,
+            discountPercentage = 10,
+            discountTag = "−10% Student OFF",
+            menu = listOf(
+                mapOf("id" to "jbl_1", "name" to "Beauty Special Lassi", "priceTk" to 35, "kcal" to 290, "slot" to "snacks", "isVegetarian" to true)
+            )
+        ),
+
+        // BAU, Mymensingh
+        RestaurantEntity(
+            id = "rest_bau_jabbar",
+            name = "Jabbar Mor Student Hotel",
+            latitude = 24.7255,
+            longitude = 90.4360,
+            address = "Jabbar Mor, BAU, Mymensingh",
+            cuisine = "Fresh Dairy & Meals",
+            rating = 4.7,
+            isPartner = true,
+            discountPercentage = 15,
+            discountTag = "−15% Student OFF",
+            menu = listOf(
+                mapOf("id" to "bjm_1", "name" to "Ruti with Fresh BAU Cow Milk", "priceTk" to 30, "kcal" to 410, "slot" to "breakfast", "isVegetarian" to true),
+                mapOf("id" to "bjm_2", "name" to "Malaichai & Shingara", "priceTk" to 20, "kcal" to 260, "slot" to "snacks", "isVegetarian" to true)
+            )
+        ),
+        RestaurantEntity(
+            id = "rest_bau_dining",
+            name = "BAU Central Dining",
+            latitude = 24.7268,
+            longitude = 90.4339,
+            address = "BAU Central Campus, Mymensingh",
+            cuisine = "Hall Dining",
+            rating = 4.5,
+            isPartner = true,
+            discountPercentage = 10,
+            discountTag = "−10% Student OFF",
+            menu = listOf(
+                mapOf("id" to "bcd_1", "name" to "Fresh Pangas Fish Curry & Rice", "priceTk" to 50, "kcal" to 620, "slot" to "lunch", "isVegetarian" to false),
+                mapOf("id" to "bcd_2", "name" to "Chicken Khichuri Platter", "priceTk" to 55, "kcal" to 690, "slot" to "dinner", "isVegetarian" to false)
+            )
+        ),
+
+        // BRUR, Rangpur
+        RestaurantEntity(
+            id = "rest_brur_park_mor",
+            name = "Park Mor Student Restora",
+            latitude = 25.7195,
+            longitude = 89.2612,
+            address = "Park Mor, BRUR, Rangpur",
+            cuisine = "North Bengal Cuisine",
+            rating = 4.6,
+            isPartner = true,
+            discountPercentage = 15,
+            discountTag = "−15% Student OFF",
+            menu = listOf(
+                mapOf("id" to "bpm_1", "name" to "Dim Paratha & Spiced Tea", "priceTk" to 28, "kcal" to 390, "slot" to "breakfast", "isVegetarian" to false),
+                mapOf("id" to "bpm_2", "name" to "North Bengal Beef Rice Platter", "priceTk" to 70, "kcal" to 710, "slot" to "lunch", "isVegetarian" to false)
+            )
+        ),
+        RestaurantEntity(
+            id = "rest_brur_cafe",
+            name = "BRUR Central Cafe",
+            latitude = 25.7208,
+            longitude = 89.2600,
+            address = "BRUR Campus, Rangpur",
+            cuisine = "Snacks & Meals",
+            rating = 4.5,
+            isPartner = true,
+            discountPercentage = 10,
+            discountTag = "−10% Student OFF",
+            menu = listOf(
+                mapOf("id" to "bcc_1", "name" to "Egg Khichuri with Mixed Pickle", "priceTk" to 40, "kcal" to 590, "slot" to "dinner", "isVegetarian" to false)
+            )
         )
     )
 
@@ -299,11 +621,13 @@ class RestaurantFirestoreService(
         try {
             val collectionRef = db.collection("restaurants")
             if (!force) {
-                val snapshot = collectionRef.limit(1).get().await()
-                val sampleNonPartner = collectionRef.document("rest_kuet_canteen").get().await()
-                val needsPartnerMigration = sampleNonPartner.exists() && sampleNonPartner.getBoolean("isPartner") == true
-                if (!snapshot.isEmpty && !needsPartnerMigration) {
-                    Log.d(TAG, "'restaurants' collection already up-to-date, skipping seed.")
+                val snapshot = collectionRef.get().await()
+                val existingIds = snapshot.documents.map { it.id }.toSet()
+                val sampleNonPartner = snapshot.documents.find { it.id == "rest_kuet_canteen" }
+                val needsPartnerMigration = sampleNonPartner != null && sampleNonPartner.getBoolean("isPartner") == true
+                val hasMissingCampusRestaurants = DEFAULT_RESTAURANTS.any { it.id !in existingIds }
+                if (!snapshot.isEmpty && !needsPartnerMigration && !hasMissingCampusRestaurants) {
+                    Log.d(TAG, "'restaurants' collection already up-to-date (${snapshot.size()} docs), skipping seed.")
                     return true
                 }
             }
@@ -370,14 +694,14 @@ class RestaurantFirestoreService(
         return db.collection("restaurants")
             .snapshots()
             .map { snapshot ->
-                val entities = if (!snapshot.isEmpty) {
+                val firestoreEntities = if (!snapshot.isEmpty) {
                     snapshot.toObjects(RestaurantEntity::class.java)
                 } else {
-                    // Fall back to default in-memory list if offline or before initial seed
-                    DEFAULT_RESTAURANTS
+                    emptyList()
                 }
+                val mergedEntities = mergeWithDefaultRestaurants(firestoreEntities)
 
-                entities.map { restaurant ->
+                mergedEntities.map { restaurant ->
                     val distance = calculateDistanceKm(userLat, userLon, restaurant.latitude, restaurant.longitude)
                     RestaurantWithDistance(
                         restaurant = restaurant,
@@ -400,13 +724,14 @@ class RestaurantFirestoreService(
     ): List<RestaurantWithDistance> {
         return try {
             val snapshot = db.collection("restaurants").get().await()
-            val entities = if (!snapshot.isEmpty) {
+            val firestoreEntities = if (!snapshot.isEmpty) {
                 snapshot.toObjects(RestaurantEntity::class.java)
             } else {
-                DEFAULT_RESTAURANTS
+                emptyList()
             }
+            val mergedEntities = mergeWithDefaultRestaurants(firestoreEntities)
 
-            entities.map { restaurant ->
+            mergedEntities.map { restaurant ->
                 val distance = calculateDistanceKm(userLat, userLon, restaurant.latitude, restaurant.longitude)
                 RestaurantWithDistance(
                     restaurant = restaurant,
@@ -429,6 +754,26 @@ class RestaurantFirestoreService(
             .filter { it.distanceKm <= radiusKm }
             .sortedBy { it.distanceKm }
         }
+    }
+
+    private fun mergeWithDefaultRestaurants(firestoreEntities: List<RestaurantEntity>): List<RestaurantEntity> {
+        if (firestoreEntities.isEmpty()) return DEFAULT_RESTAURANTS
+        val defaultsById = DEFAULT_RESTAURANTS.associateBy { it.id }
+        val enrichedFirestore = firestoreEntities.map { doc ->
+            val fallback = defaultsById[doc.id]
+            if (fallback != null && ((doc.latitude == 0.0 && doc.longitude == 0.0) || doc.menu.isEmpty())) {
+                doc.copy(
+                    latitude = if (doc.latitude == 0.0) fallback.latitude else doc.latitude,
+                    longitude = if (doc.longitude == 0.0) fallback.longitude else doc.longitude,
+                    address = doc.address.ifBlank { fallback.address },
+                    menu = doc.menu.ifEmpty { fallback.menu }
+                )
+            } else {
+                doc
+            }
+        }
+        val presentIds = enrichedFirestore.map { it.id }.toSet()
+        return enrichedFirestore + DEFAULT_RESTAURANTS.filter { it.id !in presentIds }
     }
 
     /**
@@ -460,7 +805,9 @@ class RestaurantFirestoreService(
                         isPartner = rest.isPartner,
                         discountTag = rest.discountTag,
                         areaId = rest.id,
-                        areaName = rest.address
+                        areaName = rest.address,
+                        latitude = rest.latitude,
+                        longitude = rest.longitude
                     )
                 )
             }

@@ -9,6 +9,7 @@ import com.example.nutrimate.data.feast.*
 import com.example.nutrimate.data.location.CampusArea
 import com.example.nutrimate.data.location.CampusLocationManager
 import com.example.nutrimate.data.model.CentralFoodEntity
+import com.example.nutrimate.data.model.ChatMessageEntity
 import com.example.nutrimate.data.model.MealItemEntity
 import com.example.nutrimate.data.model.PartnerRestaurantEntity
 import com.example.nutrimate.data.model.PaymentRecordEntity
@@ -17,11 +18,15 @@ import com.example.nutrimate.data.repository.NutriMateFirestoreRepository
 import com.example.nutrimate.model.*
 import com.google.firebase.Firebase
 import com.google.firebase.FirebaseException
+import com.google.firebase.FirebaseTooManyRequestsException
+import com.google.firebase.auth.FirebaseAuthException
+import com.google.firebase.auth.FirebaseAuthInvalidCredentialsException
 import com.google.firebase.auth.PhoneAuthCredential
 import com.google.firebase.auth.PhoneAuthOptions
 import com.google.firebase.auth.PhoneAuthProvider
 import com.google.firebase.auth.auth
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -29,6 +34,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withTimeoutOrNull
 import java.text.SimpleDateFormat
 import java.util.Calendar
@@ -69,9 +75,13 @@ data class NutriMateUiState(
     val isLocatingGps: Boolean = false,
     val undoNoticeMessage: String? = null,
     val isAiThinking: Boolean = false,
+    val isStreamingResponse: Boolean = false,
     val isSendingOtp: Boolean = false,
+    val isVerifyingOtp: Boolean = false,
     val phoneAuthStatus: String? = null,
-    val phoneVerificationId: String? = null
+    val phoneAuthError: String? = null,
+    val phoneVerificationId: String? = null,
+    val resendCooldownSeconds: Int = 0
 ) {
     val totalTodayBudget: Int
         get() = mealSlots.sumOf { it.budget }
@@ -105,6 +115,9 @@ class NutriMateViewModel(
     private var sessionOnboardingCompleted: Boolean = false
     @Volatile
     private var hasLoadedInitialProfile: Boolean = false
+    private var activeChatJob: Job? = null
+    private var forceResendingToken: PhoneAuthProvider.ForceResendingToken? = null
+    private var resendCooldownJob: Job? = null
 
     init {
         initializeMeals()
@@ -135,6 +148,26 @@ class NutriMateViewModel(
 
             withTimeoutOrNull(4_000L) {
                 repo.seedInitialDataIfEmpty(userId, displayName, activeArea)
+            }
+
+            // Hydrate recent persisted multi-turn chat history (bounded) without blocking onboarding
+            launch {
+                val persisted = repo.loadRecentChatMessages(userId, limit = 20L)
+                if (persisted.isNotEmpty()) {
+                    val mapped = persisted.map { entity ->
+                        ChatMessage(
+                            id = entity.id,
+                            sender = if (entity.sender == MessageSender.USER.name) MessageSender.USER else MessageSender.ASSISTANT,
+                            content = entity.content,
+                            timestamp = entity.timestamp,
+                            latencyMs = entity.latencyMs,
+                            firstTokenMs = entity.firstTokenMs,
+                            isLocalExecution = entity.isLocalExecution
+                        )
+                    }
+                    _uiState.update { it.copy(chatMessages = mapped) }
+                    chatEngine.hydrateHistory(mapped)
+                }
             }
 
             // Listen to User Profile
@@ -203,7 +236,24 @@ class NutriMateViewModel(
                                         options = if (slot.options.any { it.title == matched.selectedTitle }) {
                                             slot.options
                                         } else {
-                                            listOf(MealOption(matched.selectedPlace, matched.selectedTitle, "৳${matched.selectedPrice}", matched.selectedPrice, matched.isPartner, matched.discountTag)) + slot.options
+                                            val coords = com.example.nutrimate.data.location.MapDirectionsHelper.resolveCoordinates(
+                                                placeName = matched.selectedPlace,
+                                                storedLat = matched.latitude,
+                                                storedLon = matched.longitude,
+                                                fallbackArea = state.currentCampusArea
+                                            )
+                                            listOf(
+                                                MealOption(
+                                                    place = matched.selectedPlace,
+                                                    title = matched.selectedTitle,
+                                                    priceStr = "৳${matched.selectedPrice}",
+                                                    priceNum = matched.selectedPrice,
+                                                    isPartner = matched.isPartner,
+                                                    discountTag = matched.discountTag,
+                                                    latitude = coords.latitude,
+                                                    longitude = coords.longitude
+                                                )
+                                            ) + slot.options
                                         }
                                     )
                                 } else {
@@ -281,16 +331,37 @@ class NutriMateViewModel(
             val areaMeals = area.defaultMeals.filter { it.slot.equals(id, ignoreCase = true) }
 
             val options = areaMeals.map { meal ->
+                val coords = com.example.nutrimate.data.location.MapDirectionsHelper.resolveCoordinates(
+                    placeName = meal.place,
+                    storedLat = meal.latitude,
+                    storedLon = meal.longitude,
+                    fallbackArea = area
+                )
                 MealOption(
                     place = meal.place,
                     title = meal.name,
                     priceStr = "৳${meal.priceTk}",
                     priceNum = meal.priceTk,
                     isPartner = meal.isPartner,
-                    discountTag = meal.discountTag
+                    discountTag = meal.discountTag,
+                    latitude = coords.latitude,
+                    longitude = coords.longitude
                 )
             }.ifEmpty {
-                listOf(MealOption("Campus Canteen", "$name combo", "৳$defaultBudget", defaultBudget))
+                val coords = com.example.nutrimate.data.location.MapDirectionsHelper.resolveCoordinates(
+                    placeName = "Campus Canteen",
+                    fallbackArea = area
+                )
+                listOf(
+                    MealOption(
+                        place = "Campus Canteen",
+                        title = "$name combo",
+                        priceStr = "৳$defaultBudget",
+                        priceNum = defaultBudget,
+                        latitude = coords.latitude,
+                        longitude = coords.longitude
+                    )
+                )
             }
 
             val selectedOpt = options.first()
@@ -391,46 +462,90 @@ class NutriMateViewModel(
         }
     }
 
-    fun sendFirebasePhoneVerification(activity: Activity, rawPhoneNumber: String) {
-        val clean = rawPhoneNumber.filter { it.isDigit() || it == '+' }
-        val formatted = when {
-            clean.startsWith("+") -> clean
-            clean.startsWith("0") -> "+880" + clean.removePrefix("0")
-            clean.isNotBlank() -> "+880$clean"
-            else -> "+8801712345678"
+    fun formatPhoneE164(rawPhoneNumber: String): String {
+        val stripped = rawPhoneNumber.trim().replace(Regex("[\\s\\-()]"), "")
+        return when {
+            stripped.startsWith("+") -> "+" + stripped.drop(1).filter { it.isDigit() }
+            stripped.startsWith("00") -> "+" + stripped.drop(2).filter { it.isDigit() }
+            stripped.startsWith("880") -> "+" + stripped.filter { it.isDigit() }
+            stripped.startsWith("0") -> "+880" + stripped.drop(1).filter { it.isDigit() }
+            stripped.startsWith("1") && stripped.length == 10 -> "+880$stripped"
+            stripped.isNotBlank() -> "+880" + stripped.filter { it.isDigit() }
+            else -> ""
+        }
+    }
+
+    private fun startResendCooldown(seconds: Int = 60) {
+        resendCooldownJob?.cancel()
+        resendCooldownJob = viewModelScope.launch {
+            for (remaining in seconds downTo 1) {
+                _uiState.update { it.copy(resendCooldownSeconds = remaining) }
+                delay(1_000L)
+            }
+            _uiState.update { it.copy(resendCooldownSeconds = 0) }
+        }
+    }
+
+    fun clearPhoneAuthMessages() {
+        _uiState.update { it.copy(phoneAuthError = null, phoneAuthStatus = null) }
+    }
+
+    fun sendFirebasePhoneVerification(
+        activity: Activity,
+        rawPhoneNumber: String,
+        isResend: Boolean = false
+    ) {
+        val formatted = formatPhoneE164(rawPhoneNumber)
+        val digitsCount = formatted.drop(1).count { it.isDigit() }
+        if (formatted.isBlank() || digitsCount < 8 || digitsCount > 15) {
+            _uiState.update {
+                it.copy(
+                    isSendingOtp = false,
+                    phoneAuthStatus = null,
+                    phoneAuthError = "Enter a valid mobile number (e.g. 01712345678 or +8801712345678)."
+                )
+            }
+            return
         }
 
         _uiState.update {
             it.copy(
                 isSendingOtp = true,
-                phoneAuthStatus = "Sending SMS verification via Firebase to $formatted...",
-                userGoals = it.userGoals.copy(phone = formatted)
+                phoneAuthError = null,
+                phoneAuthStatus = if (isResend) "Resending OTP to $formatted…" else "Sending 6-digit SMS code to $formatted…",
+                userGoals = it.userGoals.copy(phone = formatted, isPhoneVerified = false)
             )
         }
 
         try {
             val callbacks = object : PhoneAuthProvider.OnVerificationStateChangedCallbacks() {
                 override fun onVerificationCompleted(credential: PhoneAuthCredential) {
-                    val code = credential.smsCode ?: _uiState.value.userGoals.otp
-                    _uiState.update { state ->
-                        state.copy(
-                            isSendingOtp = false,
-                            phoneAuthStatus = "Phone automatically verified via Firebase!",
-                            userGoals = state.userGoals.copy(
-                                phone = formatted,
-                                otp = code,
-                                isPhoneVerified = true
-                            )
+                    val autoCode = credential.smsCode ?: _uiState.value.userGoals.otp
+                    viewModelScope.launch {
+                        linkOrUpdatePhoneCredential(
+                            credential = credential,
+                            formattedPhone = formatted,
+                            autoCode = autoCode,
+                            autoAdvance = false
                         )
                     }
                 }
 
                 override fun onVerificationFailed(e: FirebaseException) {
-                    Log.w(TAG, "Firebase phone verification unavailable: ${e.message}", e)
+                    Log.w(TAG, "Firebase phone verification failed: ${e.message}", e)
+                    val readableError = when (e) {
+                        is FirebaseAuthInvalidCredentialsException ->
+                            "Invalid phone number format or request. Check your number ($formatted)."
+                        is FirebaseTooManyRequestsException ->
+                            "SMS quota temporarily reached. Wait a few minutes and try again."
+                        else ->
+                            e.localizedMessage ?: "Couldn't send verification SMS. Please check your connection."
+                    }
                     _uiState.update { state ->
                         state.copy(
                             isSendingOtp = false,
-                            phoneAuthStatus = "Firebase SMS isn't enabled on this emulator/project yet. You can still enter your number & continue."
+                            phoneAuthStatus = null,
+                            phoneAuthError = readableError
                         )
                     }
                 }
@@ -439,63 +554,172 @@ class NutriMateViewModel(
                     verificationId: String,
                     token: PhoneAuthProvider.ForceResendingToken
                 ) {
+                    forceResendingToken = token
+                    startResendCooldown(60)
                     _uiState.update { state ->
                         state.copy(
                             isSendingOtp = false,
                             phoneVerificationId = verificationId,
-                            phoneAuthStatus = "6-digit SMS code sent to $formatted.",
+                            phoneAuthError = null,
+                            phoneAuthStatus = "6-digit SMS code sent to $formatted",
                             userGoals = state.userGoals.copy(phone = formatted)
                         )
                     }
                 }
             }
 
-            val options = PhoneAuthOptions.newBuilder(Firebase.auth)
+            val builder = PhoneAuthOptions.newBuilder(Firebase.auth)
                 .setPhoneNumber(formatted)
                 .setTimeout(60L, TimeUnit.SECONDS)
                 .setActivity(activity)
                 .setCallbacks(callbacks)
-                .build()
 
-            PhoneAuthProvider.verifyPhoneNumber(options)
+            if (isResend) {
+                forceResendingToken?.let { builder.setForceResendingToken(it) }
+            }
+
+            PhoneAuthProvider.verifyPhoneNumber(builder.build())
         } catch (e: Exception) {
             Log.e(TAG, "Error initiating Firebase Phone Auth", e)
             _uiState.update { state ->
                 state.copy(
                     isSendingOtp = false,
-                    phoneAuthStatus = "Phone number saved. Tap Verify & continue to proceed."
+                    phoneAuthStatus = null,
+                    phoneAuthError = e.localizedMessage ?: "Unable to start Firebase phone verification."
+                )
+            }
+        }
+    }
+
+    private suspend fun linkOrUpdatePhoneCredential(
+        credential: PhoneAuthCredential,
+        formattedPhone: String,
+        autoCode: String = "",
+        autoAdvance: Boolean = true
+    ) {
+        _uiState.update { it.copy(isVerifyingOtp = true, phoneAuthError = null) }
+        try {
+            val currentUser = Firebase.auth.currentUser
+            if (currentUser == null) {
+                Firebase.auth.signInWithCredential(credential).await()
+            } else {
+                try {
+                    currentUser.linkWithCredential(credential).await()
+                    Log.d(TAG, "Phone credential linked to Firebase user")
+                } catch (e: FirebaseAuthException) {
+                    when (e.errorCode) {
+                        "ERROR_PROVIDER_ALREADY_LINKED" -> {
+                            currentUser.updatePhoneNumber(credential).await()
+                            Log.d(TAG, "Updated Firebase user phone number")
+                        }
+                        else -> throw e
+                    }
+                }
+            }
+
+            val resolvedPhone = Firebase.auth.currentUser?.phoneNumber?.takeIf { it.isNotBlank() } ?: formattedPhone
+            resendCooldownJob?.cancel()
+            _uiState.update { state ->
+                state.copy(
+                    isSendingOtp = false,
+                    isVerifyingOtp = false,
+                    resendCooldownSeconds = 0,
+                    phoneAuthError = null,
+                    phoneAuthStatus = "Phone verified with Firebase!",
+                    onboardingStep = if (autoAdvance) 2 else state.onboardingStep,
+                    userGoals = state.userGoals.copy(
+                        phone = resolvedPhone,
+                        otp = autoCode.ifBlank { state.userGoals.otp },
+                        isPhoneVerified = true
+                    )
+                )
+            }
+        } catch (e: FirebaseAuthException) {
+            Log.w(TAG, "Firebase Phone OTP verification error [${e.errorCode}]: ${e.message}", e)
+            val errMsg = when (e.errorCode) {
+                "ERROR_INVALID_CODE" -> "Incorrect 6-digit OTP code. Please check your SMS and try again."
+                "ERROR_SESSION_EXPIRED" -> "OTP code expired. Tap 'Resend code' to get a new SMS."
+                "ERROR_CREDENTIAL_ALREADY_IN_USE" -> "This phone number is already linked to another NutriMate account."
+                else -> e.localizedMessage ?: "Phone verification failed (${e.errorCode})."
+            }
+            _uiState.update {
+                it.copy(
+                    isSendingOtp = false,
+                    isVerifyingOtp = false,
+                    phoneAuthStatus = null,
+                    phoneAuthError = errMsg
+                )
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Unexpected error verifying phone OTP", e)
+            _uiState.update {
+                it.copy(
+                    isSendingOtp = false,
+                    isVerifyingOtp = false,
+                    phoneAuthStatus = null,
+                    phoneAuthError = e.localizedMessage ?: "Verification failed. Please try again."
                 )
             }
         }
     }
 
     fun verifyOtpAndContinue(phoneNumber: String, enteredOtp: String) {
-        val verificationId = _uiState.value.phoneVerificationId
-        val currentUser = Firebase.auth.currentUser
-        val cleanPhone = phoneNumber.trim().ifBlank { _uiState.value.userGoals.phone }
-        val cleanOtp = enteredOtp.trim()
+        val state = _uiState.value
+        val formattedPhone = formatPhoneE164(phoneNumber).ifBlank { state.userGoals.phone }
+        val cleanOtp = enteredOtp.filter { it.isDigit() }
 
-        if (verificationId != null && cleanOtp.length == 6 && currentUser != null) {
-            try {
-                val credential = PhoneAuthProvider.getCredential(verificationId, cleanOtp)
-                currentUser.linkWithCredential(credential).addOnCompleteListener { task ->
-                    if (task.isSuccessful) {
-                        Log.d(TAG, "Phone credential linked to Firebase user")
-                    } else {
-                        Log.w(TAG, "Phone link fallback: ${task.exception?.message}")
-                    }
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "Phone credential check fallback: ${e.message}")
+        if (state.userGoals.isPhoneVerified && formattedPhone.isNotBlank()) {
+            _uiState.update {
+                it.copy(
+                    onboardingStep = 2,
+                    phoneAuthError = null,
+                    userGoals = it.userGoals.copy(phone = formattedPhone)
+                )
             }
+            return
         }
+
+        val verificationId = state.phoneVerificationId
+        if (verificationId.isNullOrBlank()) {
+            _uiState.update {
+                it.copy(
+                    phoneAuthStatus = null,
+                    phoneAuthError = "Tap 'Send OTP' first to receive a 6-digit SMS code on your phone."
+                )
+            }
+            return
+        }
+
+        if (cleanOtp.length != 6) {
+            _uiState.update {
+                it.copy(
+                    phoneAuthStatus = null,
+                    phoneAuthError = "Enter all 6 digits of the SMS verification code."
+                )
+            }
+            return
+        }
+
+        viewModelScope.launch {
+            val credential = PhoneAuthProvider.getCredential(verificationId, cleanOtp)
+            linkOrUpdatePhoneCredential(
+                credential = credential,
+                formattedPhone = formattedPhone,
+                autoCode = cleanOtp,
+                autoAdvance = true
+            )
+        }
+    }
+
+    fun skipPhoneVerification(rawPhoneNumber: String) {
+        val formatted = formatPhoneE164(rawPhoneNumber)
         _uiState.update { state ->
             state.copy(
                 onboardingStep = 2,
+                phoneAuthError = null,
                 userGoals = state.userGoals.copy(
-                    phone = cleanPhone,
-                    otp = cleanOtp,
-                    isPhoneVerified = verificationId != null || cleanPhone.isNotBlank()
+                    phone = formatted,
+                    isPhoneVerified = state.userGoals.isPhoneVerified
                 )
             )
         }
@@ -741,7 +965,18 @@ class NutriMateViewModel(
         _uiState.update { state ->
             val updatedSlots = state.mealSlots.map { slot ->
                 if (slot.id == slotId) {
-                    val newOpt = MealOption(placeName, itemName, "৳$priceTaka", priceTaka)
+                    val coords = com.example.nutrimate.data.location.MapDirectionsHelper.resolveCoordinates(
+                        placeName = placeName,
+                        fallbackArea = state.currentCampusArea
+                    )
+                    val newOpt = MealOption(
+                        place = placeName,
+                        title = itemName,
+                        priceStr = "৳$priceTaka",
+                        priceNum = priceTaka,
+                        latitude = coords.latitude,
+                        longitude = coords.longitude
+                    )
                     val newOpts = listOf(newOpt) + slot.options.filter { it.title != itemName }
                     slot.copy(
                         budget = priceTaka,
@@ -791,23 +1026,175 @@ class NutriMateViewModel(
         _uiState.update { it.copy(isChatOpen = false) }
     }
 
-    fun sendChatMessage(userText: String) {
-        if (userText.isBlank()) return
-        val userMsg = ChatMessage(
-            id = UUID.randomUUID().toString(),
-            sender = MessageSender.USER,
-            content = userText
-        )
-        _uiState.update { it.copy(chatMessages = it.chatMessages + userMsg, isAiThinking = true) }
+    private fun buildUserContext(dateString: String): NutriMateUserContext {
+        val state = _uiState.value
+        val g = state.userGoals
+        val fState = feastState.value
+        val plannedKcal = state.mealSlots.sumOf { it.targetKcal }
+        val remainingKcal = (g.dailyCalorieGoal - plannedKcal).coerceAtLeast(0)
+        val remainingMonthlyTk = (g.monthlyBudget - state.totalSpentThisMonth).coerceAtLeast(0)
 
-        viewModelScope.launch {
+        val heightM = (g.heightCm / 100.0).coerceAtLeast(0.5)
+        val bmi = g.weightKg / (heightM * heightM)
+        val inferredGoal = when {
+            bmi < 18.5 -> "Healthy weight gain & calorie surplus"
+            bmi > 25.0 -> "Sustainable fat loss & balanced nutrition"
+            g.goesToGym -> "Muscle building & fitness recovery"
+            else -> "Balanced weight maintenance"
+        }
+
+        val prefs = buildList {
+            add("Bangladeshi campus food")
+            add(if (g.isVegetarian) "Vegetarian" else "Non-vegetarian")
+            if (g.goesToGym) add("High-protein gym support")
+            if (g.onMessPlan) add("Student hall mess plan")
+        }
+
+        val slotAllowances = fState.mealAllowancesPaisa.mapValues { (_, paisa) -> (paisa / 100L).toInt() }
+            .ifEmpty { state.mealSlots.associate { it.id to it.budget } }
+
+        val todayTotalAllowanceTk = slotAllowances.values.sum().takeIf { it > 0 } ?: state.mealSlots.sumOf { it.budget }
+        val plannedMeals = state.mealSlots.map { slot ->
+            val opt = slot.activeOption
+            "${slot.name}: ${opt.title} at ${opt.place} (৳${opt.priceNum}, ${slot.targetKcal} kcal)"
+        }
+        val nextFeast = fState.feasts.firstOrNull { !it.isCancelled }?.let {
+            "${it.title} (৳${it.budgetPaisa / 100L})"
+        }
+        val partnerDeals = if (state.nearbyRestaurantsWithDistance.isNotEmpty()) {
+            state.nearbyRestaurantsWithDistance
+                .filter { it.restaurant.isPartner && it.distanceKm <= 10.0 }
+                .take(4)
+                .map { "${it.restaurant.name} (${it.restaurant.discountTag}, ${it.distanceFormatted})" }
+        } else {
+            state.nearbyPartnerRestaurants.take(4).map { "${it.name} (${it.discountTag})" }
+        }
+
+        return NutriMateUserContext(
+            userName = g.name.ifBlank { "Student" },
+            age = g.age,
+            userGoal = inferredGoal,
+            dailyCalorieTarget = g.dailyCalorieGoal,
+            plannedCaloriesToday = plannedKcal,
+            remainingCaloriesToday = remainingKcal,
+            monthlyBudgetTk = g.monthlyBudget,
+            monthlySpentTk = state.totalSpentThisMonth,
+            remainingMonthlyBudgetTk = remainingMonthlyTk,
+            todaySlotAllowanceTotalTk = todayTotalAllowanceTk,
+            unallocatedReserveTk = (fState.unallocatedPaisa / 100L).toInt(),
+            dietaryPreferences = prefs,
+            isStudent = g.isStudent,
+            campusArea = state.currentCampusArea.shortName,
+            university = g.university.ifBlank { state.currentCampusArea.universities.firstOrNull() ?: "Campus" },
+            onMessPlan = g.onMessPlan,
+            plannedMealsToday = plannedMeals,
+            slotAllowancesTk = slotAllowances,
+            activeFeast = nextFeast,
+            nearbyPartnerDeals = partnerDeals,
+            dateString = dateString
+        )
+    }
+
+    fun cancelChatGeneration() {
+        val hadJob = activeChatJob?.isActive == true
+        activeChatJob?.cancel()
+        activeChatJob = null
+        if (hadJob) {
+            _uiState.update { state ->
+                val finalized = state.chatMessages.map { msg ->
+                    if (msg.isStreaming) msg.copy(isStreaming = false) else msg
+                }
+                state.copy(
+                    chatMessages = finalized,
+                    isAiThinking = false,
+                    isStreamingResponse = false
+                )
+            }
+        }
+    }
+
+    fun clearChatHistory() {
+        cancelChatGeneration()
+        chatEngine.resetChatSession()
+        _uiState.update {
+            it.copy(
+                chatMessages = emptyList(),
+                isAiThinking = false,
+                isStreamingResponse = false,
+                activeTradeoffProposal = null
+            )
+        }
+        currentUserId?.let { uid ->
+            repository?.let { repo ->
+                viewModelScope.launch {
+                    repo.clearChatHistory(uid)
+                }
+            }
+        }
+    }
+
+    fun retryChatMessage(errorMessageId: String) {
+        val target = _uiState.value.chatMessages.find { it.id == errorMessageId } ?: return
+        val prompt = target.retryPrompt?.takeIf { it.isNotBlank() } ?: return
+        _uiState.update { state ->
+            state.copy(chatMessages = state.chatMessages.filterNot { it.id == errorMessageId })
+        }
+        sendChatMessage(userText = prompt, appendUserMessage = false)
+    }
+
+    fun sendChatMessage(userText: String, appendUserMessage: Boolean = true) {
+        val cleanText = userText.trim()
+        if (cleanText.isBlank()) return
+        // Prevent duplicate concurrent requests while waiting for TTFT or streaming
+        if (activeChatJob?.isActive == true || _uiState.value.isAiThinking || _uiState.value.isStreamingResponse) {
+            Log.w(TAG, "Ignoring duplicate sendChatMessage while request is already in flight")
+            return
+        }
+
+        val userMsg = ChatMessage(
+            id = "msg_${System.currentTimeMillis()}_${UUID.randomUUID().toString().take(6)}",
+            sender = MessageSender.USER,
+            content = cleanText
+        )
+        _uiState.update { state ->
+            state.copy(
+                chatMessages = if (appendUserMessage) state.chatMessages + userMsg else state.chatMessages,
+                isAiThinking = true,
+                isStreamingResponse = false
+            )
+        }
+
+        if (appendUserMessage) {
+            currentUserId?.let { uid ->
+                repository?.let { repo ->
+                    viewModelScope.launch {
+                        repo.saveCompletedChatMessage(
+                            uid,
+                            ChatMessageEntity(
+                                id = userMsg.id,
+                                sender = MessageSender.USER.name,
+                                content = userMsg.content,
+                                timestamp = userMsg.timestamp,
+                                isLocalExecution = false
+                            )
+                        )
+                    }
+                }
+            }
+        }
+
+        activeChatJob = viewModelScope.launch {
             try {
+                val tContextStart = System.currentTimeMillis()
                 val dateStr = SimpleDateFormat("EEEE, MMMM d", Locale.getDefault()).format(Calendar.getInstance().time)
+                val userContext = buildUserContext(dateStr)
+                val contextBuildMs = (System.currentTimeMillis() - tContextStart).coerceAtLeast(1L)
+
                 val finalMsg = chatEngine.processUserMessage(
-                    userText = userText,
+                    userText = cleanText,
                     currentSlots = _uiState.value.mealSlots,
-                    isVegetarian = _uiState.value.userGoals.isVegetarian,
-                    dateString = dateStr,
+                    userContext = userContext,
+                    contextBuildMs = contextBuildMs,
                     userId = currentUserId,
                     repository = repository,
                     onStepGenerated = { stepMsg ->
@@ -818,10 +1205,33 @@ class NutriMateViewModel(
                             } else {
                                 state.chatMessages + stepMsg
                             }
-                            state.copy(chatMessages = updatedList)
+                            val streamingNow = stepMsg.sender == MessageSender.ASSISTANT && stepMsg.isStreaming
+                            state.copy(
+                                chatMessages = updatedList,
+                                isAiThinking = if (streamingNow || (stepMsg.sender == MessageSender.ASSISTANT && !stepMsg.isStreaming)) false else state.isAiThinking,
+                                isStreamingResponse = streamingNow
+                            )
                         }
                     }
                 )
+
+                // Persist final completed assistant response once (never per streaming chunk)
+                if (!finalMsg.isError && !finalMsg.isStreaming && finalMsg.content.isNotBlank() && finalMsg.sender == MessageSender.ASSISTANT) {
+                    currentUserId?.let { uid ->
+                        repository?.saveCompletedChatMessage(
+                            uid,
+                            ChatMessageEntity(
+                                id = finalMsg.id,
+                                sender = MessageSender.ASSISTANT.name,
+                                content = finalMsg.content,
+                                timestamp = finalMsg.timestamp,
+                                latencyMs = finalMsg.latencyMs,
+                                firstTokenMs = finalMsg.firstTokenMs,
+                                isLocalExecution = finalMsg.isLocalExecution
+                            )
+                        )
+                    }
+                }
 
                 if (finalMsg.isPendingConfirmation && finalMsg.tradeoffToken != null) {
                     val stored = chatEngine.toolsGatekeeper.getStoredToken(finalMsg.tradeoffToken)
@@ -847,38 +1257,29 @@ class NutriMateViewModel(
                     )
                     _uiState.update { it.copy(activeTradeoffProposal = proposal) }
                 }
-            } catch (e: TimeoutCancellationException) {
-                Log.e(TAG, "AI generation timed out, using smart copilot fallback", e)
-                val intelligentContent = chatEngine.generateSmartCopilotResponse(
-                    userText = userText,
-                    currentSlots = _uiState.value.mealSlots,
-                    isVegetarian = _uiState.value.userGoals.isVegetarian
-                )
-                val fallbackMsg = ChatMessage(
-                    id = UUID.randomUUID().toString(),
-                    sender = MessageSender.ASSISTANT,
-                    content = intelligentContent,
-                    isLocalExecution = true
-                )
-                _uiState.update { it.copy(chatMessages = it.chatMessages + fallbackMsg) }
             } catch (e: CancellationException) {
+                _uiState.update { state ->
+                    state.copy(
+                        chatMessages = state.chatMessages.map { if (it.isStreaming) it.copy(isStreaming = false) else it },
+                        isAiThinking = false,
+                        isStreamingResponse = false
+                    )
+                }
                 throw e
             } catch (e: Exception) {
-                Log.e(TAG, "Chat engine exception, using smart copilot fallback", e)
-                val intelligentContent = chatEngine.generateSmartCopilotResponse(
-                    userText = userText,
-                    currentSlots = _uiState.value.mealSlots,
-                    isVegetarian = _uiState.value.userGoals.isVegetarian
-                )
-                val fallbackMsg = ChatMessage(
-                    id = UUID.randomUUID().toString(),
+                Log.e("NUTRIMATE_AI", "Unexpected ViewModel chat pipeline error", e)
+                val errMsg = ChatMessage(
+                    id = "err_${System.currentTimeMillis()}",
                     sender = MessageSender.ASSISTANT,
-                    content = intelligentContent,
-                    isLocalExecution = true
+                    content = "Couldn't complete the AI response (${e.localizedMessage ?: "unexpected error"}).",
+                    isLocalExecution = true,
+                    isError = true,
+                    retryPrompt = cleanText
                 )
-                _uiState.update { it.copy(chatMessages = it.chatMessages + fallbackMsg) }
+                _uiState.update { it.copy(chatMessages = it.chatMessages + errMsg) }
             } finally {
-                _uiState.update { it.copy(isAiThinking = false) }
+                activeChatJob = null
+                _uiState.update { it.copy(isAiThinking = false, isStreamingResponse = false) }
             }
         }
     }

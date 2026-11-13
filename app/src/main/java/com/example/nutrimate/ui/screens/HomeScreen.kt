@@ -5,9 +5,11 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -18,6 +20,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Directions
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.MyLocation
@@ -30,7 +33,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -38,6 +43,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.nutrimate.data.location.CampusArea
 import com.example.nutrimate.data.location.CampusLocationManager
+import com.example.nutrimate.data.location.MapDirectionsHelper
 import com.example.nutrimate.data.model.PartnerRestaurantEntity
 import com.example.nutrimate.data.model.RestaurantWithDistance
 import com.example.nutrimate.model.MealOption
@@ -59,6 +65,7 @@ fun HomeScreen(
     val canUndo by viewModel.canUndo.collectAsState()
     val goals = uiState.userGoals
     val context = LocalContext.current
+    var pendingDirectionsOption by remember { mutableStateOf<MealOption?>(null) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
@@ -228,6 +235,7 @@ fun HomeScreen(
                     isExpanded = isExpanded,
                     onHeaderClick = { viewModel.toggleMealExpansion(slotIndex) },
                     onOptionSelect = { optIdx -> viewModel.selectMealOption(slotIndex, optIdx) },
+                    onOptionLongClick = { option -> pendingDirectionsOption = option },
                     onRequestUpgrade = {
                         // Demo trigger: Request Kacchi Biriyani (12,000 paisa / Tk 120) on lunch
                         viewModel.requestMealUpgrade(
@@ -379,19 +387,103 @@ fun HomeScreen(
                 }
             )
         }
+
+        // Long-press Google Maps Directions Confirmation Dialog
+        pendingDirectionsOption?.let { option ->
+            val resolvedCoords = remember(option, uiState.currentCampusArea) {
+                MapDirectionsHelper.resolveCoordinates(
+                    placeName = option.place,
+                    storedLat = option.latitude,
+                    storedLon = option.longitude,
+                    fallbackArea = uiState.currentCampusArea
+                )
+            }
+
+            AlertDialog(
+                onDismissRequest = { pendingDirectionsOption = null },
+                containerColor = Color(0xFF0F1A30),
+                shape = RoundedCornerShape(22.dp),
+                modifier = Modifier.testTag("directions_confirm_dialog"),
+                icon = {
+                    Icon(
+                        imageVector = Icons.Default.Directions,
+                        contentDescription = "Directions",
+                        tint = MintAccent,
+                        modifier = Modifier.size(28.dp)
+                    )
+                },
+                title = {
+                    Text(
+                        text = "Get Directions?",
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White
+                    )
+                },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            text = "Do you want to open Google Maps and see directions to ${option.place} for ${option.title}?",
+                            fontSize = 14.sp,
+                            color = Color.White.copy(alpha = 0.9f)
+                        )
+                        if (resolvedCoords.address.isNotBlank()) {
+                            Text(
+                                text = "📍 ${resolvedCoords.address}",
+                                fontSize = 12.sp,
+                                color = MintAccentGlow
+                            )
+                        }
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            pendingDirectionsOption = null
+                            MapDirectionsHelper.openGoogleMapsDirections(
+                                context = context,
+                                restaurantName = option.place,
+                                latitude = resolvedCoords.latitude,
+                                longitude = resolvedCoords.longitude
+                            )
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = MintAccent),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.testTag("confirm_directions_btn")
+                    ) {
+                        Text(
+                            text = "Show Directions",
+                            color = MintAccentDark,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                },
+                dismissButton = {
+                    TextButton(
+                        onClick = { pendingDirectionsOption = null },
+                        modifier = Modifier.testTag("cancel_directions_btn")
+                    ) {
+                        Text("Cancel", color = Color.White.copy(alpha = 0.75f))
+                    }
+                }
+            )
+        }
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun MealSlotCard(
     slot: MealSlot,
     isExpanded: Boolean,
     onHeaderClick: () -> Unit,
     onOptionSelect: (Int) -> Unit,
+    onOptionLongClick: (MealOption) -> Unit = {},
     onRequestUpgrade: () -> Unit,
     modifier: Modifier = Modifier,
     testTag: String = "meal_slot_card"
 ) {
+    val haptics = LocalHapticFeedback.current
     GlassBox(
         modifier = modifier
             .fillMaxWidth()
@@ -403,7 +495,14 @@ fun MealSlotCard(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable(onClick = onHeaderClick),
+                    .clip(RoundedCornerShape(14.dp))
+                    .combinedClickable(
+                        onClick = onHeaderClick,
+                        onLongClick = {
+                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onOptionLongClick(slot.activeOption)
+                        }
+                    ),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
@@ -478,7 +577,8 @@ fun MealSlotCard(
                             option = option,
                             emoji = slot.emoji,
                             isSelected = isSelected,
-                            onClick = { onOptionSelect(optIndex) }
+                            onClick = { onOptionSelect(optIndex) },
+                            onLongClick = { onOptionLongClick(option) }
                         )
                     }
                 }
@@ -487,13 +587,16 @@ fun MealSlotCard(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun MealOptionItem(
     option: MealOption,
     emoji: String,
     isSelected: Boolean,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onLongClick: () -> Unit = {}
 ) {
+    val haptics = LocalHapticFeedback.current
     val bgModifier = if (isSelected) {
         Modifier.background(
             color = MintAccent.copy(alpha = 0.22f),
@@ -517,8 +620,15 @@ fun MealOptionItem(
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
             .then(bgModifier)
-            .clickable(onClick = onClick)
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = {
+                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                    onLongClick()
+                }
+            )
             .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp)

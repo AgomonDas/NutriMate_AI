@@ -45,6 +45,8 @@ data class MealItemEntity(
     val selectedPrice: Int = 0,
     val isPartner: Boolean = false,
     val discountTag: String = "",
+    val latitude: Double = 0.0,
+    val longitude: Double = 0.0,
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null
 )
@@ -75,7 +77,9 @@ data class CentralFoodEntity(
     val isPartner: Boolean = false,
     val discountTag: String = "",
     val areaId: String = "buet_palashi",
-    val areaName: String = "BUET & Palashi"
+    val areaName: String = "BUET & Palashi",
+    val latitude: Double = 0.0,
+    val longitude: Double = 0.0
 )
 
 @IgnoreExtraProperties
@@ -89,7 +93,10 @@ data class PartnerRestaurantEntity(
     val discountPercentage: Int = 10,
     val discountTag: String = "−10% Student OFF",
     val rating: Double = 4.5,
-    val popularDish: String = "Kacchi Biriyani"
+    val popularDish: String = "Kacchi Biriyani",
+    val latitude: Double = 0.0,
+    val longitude: Double = 0.0,
+    val address: String = ""
 )
 
 @IgnoreExtraProperties
@@ -124,4 +131,16 @@ data class RestaurantWithDistance(
     val restaurant: RestaurantEntity,
     val distanceKm: Double,
     val distanceFormatted: String
+)
+
+@IgnoreExtraProperties
+data class ChatMessageEntity(
+    @DocumentId val docId: String = "",
+    val id: String = "",
+    val sender: String = "ASSISTANT",
+    val content: String = "",
+    val timestamp: Long = 0L,
+    val latencyMs: Long? = null,
+    val firstTokenMs: Long? = null,
+    val isLocalExecution: Boolean = false
 )

@@ -55,7 +55,9 @@ service cloud.firestore {
              data.selectedTitle is string && data.selectedTitle.size() > 0 && data.selectedTitle.size() <= 120 &&
              data.selectedPrice is int && data.selectedPrice >= 0 &&
              (!('isPartner' in data) || data.isPartner is bool) &&
-             (!('discountTag' in data) || (data.discountTag is string && data.discountTag.size() <= 40));
+             (!('discountTag' in data) || (data.discountTag is string && data.discountTag.size() <= 40)) &&
+             (!('latitude' in data) || (data.latitude is number && data.latitude >= -90.0 && data.latitude <= 90.0)) &&
+             (!('longitude' in data) || (data.longitude is number && data.longitude >= -180.0 && data.longitude <= 180.0));
     }
 
     function isValidPaymentRecord(data) {
@@ -65,6 +67,16 @@ service cloud.firestore {
              data.discountAmount is int && data.discountAmount >= 0 &&
              data.netPayable is int && data.netPayable >= 0 &&
              data.paymentMethod is string && data.paymentMethod.size() <= 40;
+    }
+
+    function isValidChatMessage(data) {
+      return data.id is string && isValidId(data.id) &&
+             data.sender in ['USER', 'ASSISTANT'] &&
+             data.content is string && data.content.size() > 0 && data.content.size() <= 8000 &&
+             data.timestamp is int && data.timestamp > 0 &&
+             (!('isLocalExecution' in data) || data.isLocalExecution is bool) &&
+             (!('latencyMs' in data) || (data.latencyMs is int && data.latencyMs >= 0)) &&
+             (!('firstTokenMs' in data) || (data.firstTokenMs is int && data.firstTokenMs >= 0));
     }
 
     function isValidCommunitySubmission(data) {
@@ -88,7 +100,9 @@ service cloud.firestore {
              (!('isPartner' in data) || data.isPartner is bool) &&
              (!('discountTag' in data) || (data.discountTag is string && data.discountTag.size() <= 40)) &&
              (!('areaId' in data) || (data.areaId is string && data.areaId.size() <= 60)) &&
-             (!('areaName' in data) || (data.areaName is string && data.areaName.size() <= 100));
+             (!('areaName' in data) || (data.areaName is string && data.areaName.size() <= 100)) &&
+             (!('latitude' in data) || (data.latitude is number && data.latitude >= -90.0 && data.latitude <= 90.0)) &&
+             (!('longitude' in data) || (data.longitude is number && data.longitude >= -180.0 && data.longitude <= 180.0));
     }
 
     function isValidPartnerRestaurant(data) {
@@ -98,7 +112,10 @@ service cloud.firestore {
              data.areaName is string && data.areaName.size() > 0 && data.areaName.size() <= 100 &&
              data.discountPercentage is int && data.discountPercentage >= 0 && data.discountPercentage <= 100 &&
              (!('cuisine' in data) || (data.cuisine is string && data.cuisine.size() <= 80)) &&
-             (!('discountTag' in data) || (data.discountTag is string && data.discountTag.size() <= 40));
+             (!('discountTag' in data) || (data.discountTag is string && data.discountTag.size() <= 40)) &&
+             (!('latitude' in data) || (data.latitude is number && data.latitude >= -90.0 && data.latitude <= 90.0)) &&
+             (!('longitude' in data) || (data.longitude is number && data.longitude >= -180.0 && data.longitude <= 180.0)) &&
+             (!('address' in data) || (data.address is string && data.address.size() <= 200));
     }
 
     function isValidRestaurant(data) {
@@ -195,7 +212,7 @@ service cloud.firestore {
                          incoming().diff(existing()).affectedKeys().hasOnly([
                            'name', 'emoji', 'budget', 'targetKcal', 'activeHourLimit',
                            'selectedPlace', 'selectedTitle', 'selectedPrice',
-                           'isPartner', 'discountTag', 'updatedAt'
+                           'isPartner', 'discountTag', 'latitude', 'longitude', 'updatedAt'
                          ]);
 
         allow delete: if isOwner(userId);
@@ -213,6 +230,19 @@ service cloud.firestore {
                          isValidPaymentRecord(incoming());
 
         allow update: if false; // Receipts are immutable
+        allow delete: if isOwner(userId);
+      }
+
+      // User's persisted multi-turn chat messages (completed messages only)
+      match /chat_messages/{messageId} {
+        allow get, list: if isOwner(userId);
+
+        allow create: if isOwner(userId) &&
+                         isValidId(messageId) &&
+                         incoming().id == messageId &&
+                         isValidChatMessage(incoming());
+
+        allow update: if false;
         allow delete: if isOwner(userId);
       }
     }

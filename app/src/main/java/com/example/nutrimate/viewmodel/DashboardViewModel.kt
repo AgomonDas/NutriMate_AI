@@ -6,6 +6,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.nutrimate.data.location.CampusArea
 import com.example.nutrimate.data.location.CampusLocationManager
+import com.example.nutrimate.data.location.MapDirectionsHelper
 import com.example.nutrimate.data.repository.NutriMateFirestoreRepository
 import com.example.nutrimate.data.service.RestaurantFirestoreService
 import com.example.nutrimate.data.weather.CurrentWeather
@@ -15,6 +16,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.Calendar
 import kotlin.math.roundToInt
 
@@ -54,7 +56,10 @@ data class DiscountedMealDeal(
     val slot: String,
     val kcal: Int,
     val isVegetarian: Boolean,
-    val isPartner: Boolean
+    val isPartner: Boolean,
+    val latitude: Double = 0.0,
+    val longitude: Double = 0.0,
+    val address: String = ""
 )
 
 data class DashboardUiState(
@@ -69,6 +74,7 @@ data class DashboardUiState(
     val dealsError: String? = null,
     val selectedSlotFilter: String = "All",
     val isVegOnly: Boolean = false,
+    val isDealsOnly: Boolean = false,
     val sortOption: DealSortOption = DealSortOption.DISTANCE,
     val showCampusPicker: Boolean = false,
     val monthlyBudgetTk: Int = 6000,
@@ -113,6 +119,9 @@ data class DashboardUiState(
                 }
                 .filter { deal ->
                     if (isVegOnly) deal.isVegetarian else true
+                }
+                .filter { deal ->
+                    if (isDealsOnly) deal.isPartner && deal.discountPercent > 0 else true
                 }
                 .let { list ->
                     when (sortOption) {
@@ -195,14 +204,27 @@ class DashboardViewModel(
                 val loc = CampusLocationManager.detectDeviceLocation(context)
                 if (loc != null) {
                     val closest = CampusLocationManager.findClosestArea(loc.latitude, loc.longitude)
+                    val distToClosestKm = restaurantService.calculateDistanceKm(
+                        loc.latitude, loc.longitude,
+                        closest.latitude, closest.longitude
+                    )
+                    val useRawGps = distToClosestKm <= 20.0
                     _uiState.update {
                         it.copy(
                             currentCampus = closest,
-                            locationNote = "📍 Located near ${closest.shortName}"
+                            locationNote = if (useRawGps) {
+                                "📍 Located near ${closest.shortName}"
+                            } else {
+                                "Showing ${closest.shortName} campus meals & deals"
+                            }
                         )
                     }
                     loadWeatherForCampus(closest)
-                    loadDealsForCampus(closest, loc.latitude, loc.longitude)
+                    loadDealsForCampus(
+                        campus = closest,
+                        userLat = if (useRawGps) loc.latitude else closest.latitude,
+                        userLon = if (useRawGps) loc.longitude else closest.longitude
+                    )
                 } else {
                     val detected = CampusLocationManager.detectCampusFromDevice(context)
                     _uiState.update {
@@ -253,19 +275,30 @@ class DashboardViewModel(
         _uiState.update { it.copy(isDealsLoading = true, dealsError = null) }
         viewModelScope.launch {
             try {
-                // Ensure initial seed in Firestore
-                repository.seedAreaRestaurantsAndFoods(campus)
+                // Seed Firestore in the background so initial UI rendering never blocks on writes
+                launch {
+                    repository.restaurantService.seedRestaurantsIfEmpty()
+                    repository.seedAreaRestaurantsAndFoods(campus)
+                }
 
-                // Query nearby restaurants from Firestore (max 10 km radius)
-                val nearbyRestaurants = repository.getNearbyRestaurants(userLat, userLon, radiusKm = 10.0)
-                val dealsList = mutableListOf<DiscountedMealDeal>()
+                // Query nearby restaurants within 10 km; if GPS coords are outside radius, fall back to campus coords
+                var anchorLat = userLat
+                var anchorLon = userLon
+                var nearbyRestaurants = withTimeoutOrNull(3_000L) {
+                    repository.getNearbyRestaurants(anchorLat, anchorLon, radiusKm = 10.0)
+                }.orEmpty()
 
-                val restaurantsToUse = if (nearbyRestaurants.isNotEmpty()) {
-                    nearbyRestaurants.filter { it.distanceKm <= 10.0 }
-                } else {
-                    // Fall back to default restaurants with calculated distances <= 10 km
+                if (nearbyRestaurants.isEmpty() && (anchorLat != campus.latitude || anchorLon != campus.longitude)) {
+                    anchorLat = campus.latitude
+                    anchorLon = campus.longitude
+                    nearbyRestaurants = withTimeoutOrNull(3_000L) {
+                        repository.getNearbyRestaurants(anchorLat, anchorLon, radiusKm = 10.0)
+                    }.orEmpty()
+                }
+
+                val restaurantsToUse = nearbyRestaurants.ifEmpty {
                     restaurantService.DEFAULT_RESTAURANTS.map { rest ->
-                        val dist = restaurantService.calculateDistanceKm(userLat, userLon, rest.latitude, rest.longitude)
+                        val dist = restaurantService.calculateDistanceKm(anchorLat, anchorLon, rest.latitude, rest.longitude)
                         com.example.nutrimate.data.model.RestaurantWithDistance(
                             restaurant = rest,
                             distanceKm = dist,
@@ -274,11 +307,13 @@ class DashboardViewModel(
                     }.filter { it.distanceKm <= 10.0 }.sortedBy { it.distanceKm }
                 }
 
+                val dealsList = mutableListOf<DiscountedMealDeal>()
+                val seenMealKeys = mutableSetOf<String>()
+
                 for (item in restaurantsToUse) {
                     val rest = item.restaurant
-                    if (!rest.isPartner || rest.discountPercentage <= 0) continue
-                    val discountPercent = rest.discountPercentage
-                    val discountTag = if (rest.discountTag.isNotBlank()) rest.discountTag else "−$discountPercent% OFF"
+                    val discountPercent = if (rest.isPartner && rest.discountPercentage > 0) rest.discountPercentage else 0
+                    val discountTag = if (discountPercent > 0) "−$discountPercent%" else ""
 
                     for (m in rest.menu) {
                         val name = m["name"] as? String ?: continue
@@ -288,8 +323,14 @@ class DashboardViewModel(
                         val isVeg = (m["isVegetarian"] as? Boolean) ?: false
                         val id = m["id"] as? String ?: name.lowercase().replace(" ", "_")
 
-                        // Calculate original vs discounted student price
-                        val originalPrice = (price / (1.0 - (discountPercent / 100.0))).roundToInt().coerceAtLeast(price + 5)
+                        val originalPrice = if (discountPercent > 0) {
+                            (price / (1.0 - (discountPercent / 100.0))).roundToInt().coerceAtLeast(price + 5)
+                        } else {
+                            price
+                        }
+
+                        val normalizedKey = "${name.trim().lowercase()}_${slot.trim().lowercase()}"
+                        seenMealKeys.add(normalizedKey)
 
                         dealsList.add(
                             DiscountedMealDeal(
@@ -303,14 +344,71 @@ class DashboardViewModel(
                                 originalPriceTk = originalPrice,
                                 discountedPriceTk = price,
                                 discountPercent = discountPercent,
-                                discountTag = "−$discountPercent%",
+                                discountTag = discountTag,
                                 slot = slot,
                                 kcal = kcal,
                                 isVegetarian = isVeg,
-                                isPartner = rest.isPartner
+                                isPartner = rest.isPartner && discountPercent > 0,
+                                latitude = rest.latitude,
+                                longitude = rest.longitude,
+                                address = rest.address
                             )
                         )
                     }
+                }
+
+                // Supplement with any campus.defaultMeals not already represented in restaurant menus
+                val partnerLookup = campus.defaultRestaurants.associateBy { it.name.trim().lowercase() }
+                for (meal in campus.defaultMeals) {
+                    val normalizedKey = "${meal.name.trim().lowercase()}_${meal.slot.trim().lowercase()}"
+                    if (normalizedKey in seenMealKeys) continue
+
+                    val geo = MapDirectionsHelper.resolveCoordinates(
+                        placeName = meal.place,
+                        storedLat = meal.latitude,
+                        storedLon = meal.longitude,
+                        fallbackArea = campus
+                    )
+                    val dist = restaurantService.calculateDistanceKm(anchorLat, anchorLon, geo.latitude, geo.longitude)
+                    if (dist > 10.0) continue
+
+                    val partner = partnerLookup[meal.place.trim().lowercase()]
+                    val pctFromTag = meal.discountTag.filter { it.isDigit() }.toIntOrNull() ?: 0
+                    val discountPercent = if (meal.isPartner) {
+                        (partner?.discountPercentage ?: pctFromTag).coerceAtLeast(if (pctFromTag > 0) pctFromTag else 10)
+                    } else 0
+                    val originalPrice = if (discountPercent > 0) {
+                        (meal.priceTk / (1.0 - (discountPercent / 100.0))).roundToInt().coerceAtLeast(meal.priceTk + 5)
+                    } else meal.priceTk
+
+                    val lowerName = meal.name.lowercase()
+                    val isVeg = lowerName.contains("veg") || lowerName.contains("dal") ||
+                        lowerName.contains("shingara") || lowerName.contains("fuchka") ||
+                        lowerName.contains("chotpoti") || lowerName.contains("ruti") ||
+                        lowerName.contains("luchi") || lowerName.contains("coffee") || lowerName.contains("tea")
+
+                    dealsList.add(
+                        DiscountedMealDeal(
+                            key = "campus_${meal.id}",
+                            mealName = meal.name,
+                            restaurantName = meal.place,
+                            restaurantId = partner?.id ?: meal.id,
+                            distanceKm = dist,
+                            distanceFormatted = restaurantService.formatDistance(dist),
+                            rating = partner?.rating ?: 4.6,
+                            originalPriceTk = originalPrice,
+                            discountedPriceTk = meal.priceTk,
+                            discountPercent = discountPercent,
+                            discountTag = if (discountPercent > 0) "−$discountPercent%" else "",
+                            slot = meal.slot,
+                            kcal = meal.kcal,
+                            isVegetarian = isVeg,
+                            isPartner = discountPercent > 0,
+                            latitude = geo.latitude,
+                            longitude = geo.longitude,
+                            address = geo.address
+                        )
+                    )
                 }
 
                 _uiState.update {
@@ -337,6 +435,10 @@ class DashboardViewModel(
 
     fun toggleVegOnly() {
         _uiState.update { it.copy(isVegOnly = !it.isVegOnly) }
+    }
+
+    fun toggleDealsOnly() {
+        _uiState.update { it.copy(isDealsOnly = !it.isDealsOnly) }
     }
 
     fun cycleSortOption() {

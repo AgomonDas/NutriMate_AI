@@ -6,9 +6,11 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -27,7 +29,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
@@ -38,9 +42,8 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.nutrimate.data.location.CampusArea
 import com.example.nutrimate.data.location.CampusLocationManager
-import com.example.nutrimate.data.weather.WeatherCondition
+import com.example.nutrimate.data.location.MapDirectionsHelper
 import com.example.nutrimate.ui.components.GlassBox
-import com.example.nutrimate.ui.components.WeatherBackground
 import com.example.nutrimate.ui.theme.*
 import com.example.nutrimate.viewmodel.DashboardUiState
 import com.example.nutrimate.viewmodel.DashboardViewModel
@@ -58,11 +61,7 @@ fun DashboardScreen(
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
-
-    // Determine day vs night fallback (hour in 6..17)
-    val currentHour = remember { Calendar.getInstance().get(Calendar.HOUR_OF_DAY) }
-    val isDay = uiState.currentWeather?.isDay ?: (currentHour in 6..17)
-    val weatherCondition = uiState.currentWeather?.condition ?: WeatherCondition.CLEAR
+    var pendingDirectionsDeal by remember { mutableStateOf<DiscountedMealDeal?>(null) }
 
     // Location Permission Launcher
     val permissionLauncher = rememberLauncherForActivityResult(
@@ -91,7 +90,7 @@ fun DashboardScreen(
     val bottomInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 130.dp
 
     Box(modifier = modifier.fillMaxSize()) {
-        // Interactive Scrollable Dashboard on top of global edge-to-edge weather sky
+        // Interactive Scrollable Dashboard on top of global edge-to-edge blurred aura backdrop
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(
@@ -126,13 +125,11 @@ fun DashboardScreen(
                 )
             }
 
-            // ORDER 2: Weather Hero Card
-            item(key = "weather_hero_card") {
-                WeatherHeroCard(
+            // ORDER 2: Clean Welcome Message (no weather details)
+            item(key = "welcome_hero_section") {
+                WelcomeHeroSection(
                     name = userName.ifBlank { "Student" },
-                    weather = uiState.currentWeather,
-                    isLoading = uiState.isWeatherLoading,
-                    errorMessage = uiState.weatherError
+                    campusShort = uiState.currentCampus.shortName
                 )
             }
 
@@ -180,9 +177,11 @@ fun DashboardScreen(
                     dealCount = uiState.filteredDeals.size,
                     selectedSlot = uiState.selectedSlotFilter,
                     isVegOnly = uiState.isVegOnly,
+                    isDealsOnly = uiState.isDealsOnly,
                     sortOption = uiState.sortOption,
                     onSlotSelected = { viewModel.setSlotFilter(it) },
                     onToggleVeg = { viewModel.toggleVegOnly() },
+                    onToggleDealsOnly = { viewModel.toggleDealsOnly() },
                     onCycleSort = { viewModel.cycleSortOption() }
                 )
             }
@@ -267,7 +266,7 @@ fun DashboardScreen(
                                     color = Color.White
                                 )
                                 Text(
-                                    text = "Try switching slot tabs or turning off 'Veg only'.",
+                                    text = "Try switching slot tabs or turning off active filters.",
                                     fontSize = 12.sp,
                                     color = Color.White.copy(alpha = 0.7f)
                                 )
@@ -278,7 +277,10 @@ fun DashboardScreen(
 
                 else -> {
                     items(uiState.filteredDeals, key = { it.key }) { deal ->
-                        DealCard(deal = deal)
+                        DealCard(
+                            deal = deal,
+                            onLongClick = { pendingDirectionsDeal = deal }
+                        )
                     }
                 }
             }
@@ -291,6 +293,88 @@ fun DashboardScreen(
                 campuses = CampusLocationManager.CAMPUS_AREAS,
                 onSelectCampus = { campus -> viewModel.selectCampus(campus) },
                 onDismiss = { viewModel.dismissCampusPicker() }
+            )
+        }
+
+        // Long-press Google Maps Directions Confirmation Dialog
+        pendingDirectionsDeal?.let { deal ->
+            val resolvedCoords = remember(deal) {
+                MapDirectionsHelper.resolveCoordinates(
+                    placeName = deal.restaurantName,
+                    storedLat = deal.latitude,
+                    storedLon = deal.longitude,
+                    fallbackArea = uiState.currentCampus
+                )
+            }
+            val displayAddress = deal.address.ifBlank { resolvedCoords.address }
+
+            AlertDialog(
+                onDismissRequest = { pendingDirectionsDeal = null },
+                containerColor = Color(0xFF0F1A30),
+                shape = RoundedCornerShape(22.dp),
+                modifier = Modifier.testTag("directions_confirm_dialog"),
+                icon = {
+                    Icon(
+                        imageVector = Icons.Default.Directions,
+                        contentDescription = "Directions",
+                        tint = MintAccent,
+                        modifier = Modifier.size(28.dp)
+                    )
+                },
+                title = {
+                    Text(
+                        text = "Get Directions?",
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White
+                    )
+                },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            text = "Do you want to open Google Maps and see directions to ${deal.restaurantName} for ${deal.mealName}?",
+                            fontSize = 14.sp,
+                            color = Color.White.copy(alpha = 0.9f)
+                        )
+                        if (displayAddress.isNotBlank()) {
+                            Text(
+                                text = "📍 $displayAddress",
+                                fontSize = 12.sp,
+                                color = MintAccentGlow
+                            )
+                        }
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            pendingDirectionsDeal = null
+                            MapDirectionsHelper.openGoogleMapsDirections(
+                                context = context,
+                                restaurantName = deal.restaurantName,
+                                latitude = resolvedCoords.latitude,
+                                longitude = resolvedCoords.longitude
+                            )
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = MintAccent),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.testTag("confirm_directions_btn")
+                    ) {
+                        Text(
+                            text = "Show Directions",
+                            color = MintAccentDark,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                },
+                dismissButton = {
+                    TextButton(
+                        onClick = { pendingDirectionsDeal = null },
+                        modifier = Modifier.testTag("cancel_directions_btn")
+                    ) {
+                        Text("Cancel", color = Color.White.copy(alpha = 0.75f))
+                    }
+                }
             )
         }
     }
@@ -400,11 +484,9 @@ private fun DashboardHeaderRow(
 }
 
 @Composable
-private fun WeatherHeroCard(
+private fun WelcomeHeroSection(
     name: String,
-    weather: com.example.nutrimate.data.weather.CurrentWeather?,
-    isLoading: Boolean,
-    errorMessage: String?
+    campusShort: String
 ) {
     val currentHour = remember { Calendar.getInstance().get(Calendar.HOUR_OF_DAY) }
     val greeting = remember(currentHour) {
@@ -418,71 +500,31 @@ private fun WeatherHeroCard(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .testTag("weather_hero_card"),
+            .padding(vertical = 4.dp)
+            .testTag("welcome_hero_section"),
         verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
         Text(
-            text = "$greeting, $name",
-            fontSize = 18.sp,
-            fontWeight = FontWeight.Medium,
-            color = Color.White.copy(alpha = 0.95f)
+            text = "NUTRIMATE · $campusShort".uppercase(),
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+            color = MintAccentGlow.copy(alpha = 0.9f),
+            letterSpacing = 1.1.sp
         )
 
-        if (weather != null) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                Text(
-                    text = "${weather.temperatureC}°",
-                    fontSize = 78.sp,
-                    fontWeight = FontWeight.Light,
-                    color = Color.White,
-                    lineHeight = 82.sp
-                )
+        Text(
+            text = "$greeting, $name",
+            fontSize = 30.sp,
+            fontWeight = FontWeight.Bold,
+            color = Color.White,
+            lineHeight = 36.sp
+        )
 
-                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        Text(text = weather.condition.emoji, fontSize = 22.sp)
-                        Text(
-                            text = weather.condition.label,
-                            fontSize = 18.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = Color.White
-                        )
-                    }
-
-                    Text(
-                        text = "Feels like ${weather.apparentTemperatureC}° · H: ${weather.highTempC}° L: ${weather.lowTempC}°",
-                        fontSize = 12.sp,
-                        color = Color.White.copy(alpha = 0.82f)
-                    )
-
-                    Text(
-                        text = "Humidity ${weather.humidityPercent}% · Wind ${weather.windSpeedKmh} km/h · Rain ${weather.rainMm} mm",
-                        fontSize = 11.sp,
-                        color = Color.White.copy(alpha = 0.75f)
-                    )
-                }
-            }
-        } else if (isLoading) {
-            Text(
-                text = "Checking the weather…",
-                fontSize = 15.sp,
-                color = Color.White.copy(alpha = 0.8f),
-                modifier = Modifier.padding(vertical = 12.dp)
-            )
-        } else {
-            Text(
-                text = errorMessage ?: "Weather unavailable",
-                fontSize = 15.sp,
-                color = Color.White.copy(alpha = 0.8f),
-                modifier = Modifier.padding(vertical = 12.dp)
-            )
-        }
+        Text(
+            text = "Student deals, nearby meals & your weekly food budget.",
+            fontSize = 13.sp,
+            color = Color.White.copy(alpha = 0.76f)
+        )
     }
 }
 
@@ -638,23 +680,25 @@ private fun DealsFilterSection(
     dealCount: Int,
     selectedSlot: String,
     isVegOnly: Boolean,
+    isDealsOnly: Boolean,
     sortOption: com.example.nutrimate.viewmodel.DealSortOption,
     onSlotSelected: (String) -> Unit,
     onToggleVeg: () -> Unit,
+    onToggleDealsOnly: () -> Unit,
     onCycleSort: () -> Unit
 ) {
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        // Deals title with count
+        // Deals & meals title with count
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Text(
-                text = "Student deals near $campusShort",
+                text = "Deals & meals near $campusShort",
                 fontSize = 16.sp,
                 fontWeight = FontWeight.Bold,
                 color = Color.White
@@ -667,7 +711,7 @@ private fun DealsFilterSection(
                     .padding(horizontal = 8.dp, vertical = 2.dp)
             ) {
                 Text(
-                    text = "$dealCount deals",
+                    text = "$dealCount options",
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Bold,
                     color = Color.White.copy(alpha = 0.85f)
@@ -707,12 +751,36 @@ private fun DealsFilterSection(
             }
         }
 
-        // Second Chip Row: "🌱 Veg only" toggle and "Sort: …" cycle chip
+        // Second Chip Row: "🏷️ Deals only", "🌱 Veg only", and "Sort: …"
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            // Deals Only Toggle Chip
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(if (isDealsOnly) MintAccent.copy(alpha = 0.28f) else Color.White.copy(alpha = 0.14f))
+                    .border(
+                        1.dp,
+                        if (isDealsOnly) MintAccent else Color.White.copy(alpha = 0.25f),
+                        RoundedCornerShape(16.dp)
+                    )
+                    .clickable(onClick = onToggleDealsOnly)
+                    .padding(horizontal = 12.dp, vertical = 6.dp)
+                    .testTag("filter_deals_toggle")
+            ) {
+                Text(
+                    text = "🏷️ Deals only",
+                    fontSize = 12.sp,
+                    fontWeight = if (isDealsOnly) FontWeight.Bold else FontWeight.Normal,
+                    color = if (isDealsOnly) MintAccentGlow else Color.White
+                )
+            }
+
             // Veg Only Toggle Chip
             Box(
                 modifier = Modifier
@@ -767,8 +835,13 @@ private fun DealsFilterSection(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun DealCard(deal: DiscountedMealDeal) {
+private fun DealCard(
+    deal: DiscountedMealDeal,
+    onLongClick: () -> Unit = {}
+) {
+    val haptics = LocalHapticFeedback.current
     val slotEmoji = when (deal.slot.lowercase()) {
         "breakfast" -> "🍳"
         "lunch" -> "🍛"
@@ -786,6 +859,14 @@ private fun DealCard(deal: DiscountedMealDeal) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
+                .clip(RoundedCornerShape(18.dp))
+                .combinedClickable(
+                    onClick = {},
+                    onLongClick = {
+                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                        onLongClick()
+                    }
+                )
                 .padding(14.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -877,28 +958,43 @@ private fun DealCard(deal: DiscountedMealDeal) {
                 }
             }
 
-            // Right side: Discount badge, Bold Discounted price & Strikethrough Original
+            // Right side: Discount badge (when partner deal), Bold price & Strikethrough Original
             Column(
                 horizontalAlignment = Alignment.End,
                 verticalArrangement = Arrangement.spacedBy(3.dp)
             ) {
-                // Mint Discount badge
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(MintAccent.copy(alpha = 0.25f))
-                        .border(1.dp, MintAccent.copy(alpha = 0.6f), RoundedCornerShape(8.dp))
-                        .padding(horizontal = 6.dp, vertical = 2.dp)
-                ) {
-                    Text(
-                        text = deal.discountTag,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.ExtraBold,
-                        color = MintAccent
-                    )
+                if (deal.discountPercent > 0 && deal.discountTag.isNotBlank()) {
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(MintAccent.copy(alpha = 0.25f))
+                            .border(1.dp, MintAccent.copy(alpha = 0.6f), RoundedCornerShape(8.dp))
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                    ) {
+                        Text(
+                            text = deal.discountTag,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = MintAccent
+                        )
+                    }
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(Color.White.copy(alpha = 0.12f))
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                    ) {
+                        Text(
+                            text = deal.slot.replaceFirstChar { it.uppercase() },
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = Color.White.copy(alpha = 0.75f)
+                        )
+                    }
                 }
 
-                // Discounted price
+                // Final price
                 Text(
                     text = "৳%,d".format(deal.discountedPriceTk),
                     fontSize = 16.sp,
@@ -906,13 +1002,15 @@ private fun DealCard(deal: DiscountedMealDeal) {
                     color = Color.White
                 )
 
-                // Strikethrough Original price
-                Text(
-                    text = "৳%,d".format(deal.originalPriceTk),
-                    fontSize = 12.sp,
-                    color = Color.White.copy(alpha = 0.55f),
-                    textDecoration = TextDecoration.LineThrough
-                )
+                // Strikethrough Original price only when discounted
+                if (deal.discountPercent > 0 && deal.originalPriceTk > deal.discountedPriceTk) {
+                    Text(
+                        text = "৳%,d".format(deal.originalPriceTk),
+                        fontSize = 12.sp,
+                        color = Color.White.copy(alpha = 0.55f),
+                        textDecoration = TextDecoration.LineThrough
+                    )
+                }
             }
         }
     }

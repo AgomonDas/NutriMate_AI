@@ -18,8 +18,11 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -49,19 +52,22 @@ fun ChatSheet(
     val uiState by viewModel.uiState.collectAsState()
     var inputText by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
+    val isGenerating = uiState.isAiThinking || uiState.isStreamingResponse
+    val lastContentLen = uiState.chatMessages.lastOrNull()?.content?.length ?: 0
 
-    LaunchedEffect(uiState.chatMessages.size, uiState.isAiThinking) {
-        if (uiState.chatMessages.isNotEmpty() || uiState.isAiThinking) {
-            val targetIdx = (uiState.chatMessages.size + (if (uiState.isAiThinking) 0 else -1)).coerceAtLeast(0)
-            listState.animateScrollToItem(targetIdx)
+    LaunchedEffect(uiState.chatMessages.size, uiState.isAiThinking, lastContentLen) {
+        if (uiState.chatMessages.isNotEmpty() || (uiState.isAiThinking && !uiState.isStreamingResponse)) {
+            val extra = if (uiState.isAiThinking && !uiState.isStreamingResponse) 0 else -1
+            val targetIdx = (uiState.chatMessages.size + extra).coerceAtLeast(0)
+            listState.scrollToItem(targetIdx)
         }
     }
 
-    // Move and scroll automatically when the software keyboard opens
+    // Scroll automatically when the software keyboard opens
     val imeBottom = WindowInsets.ime.getBottom(androidx.compose.ui.platform.LocalDensity.current)
     LaunchedEffect(imeBottom) {
         if (imeBottom > 0 && uiState.chatMessages.isNotEmpty()) {
-            listState.animateScrollToItem(uiState.chatMessages.size - 1)
+            listState.animateScrollToItem((uiState.chatMessages.size - 1).coerceAtLeast(0))
         }
     }
 
@@ -121,63 +127,123 @@ fun ChatSheet(
                         }
                     }
                     Text(
-                        text = "Deterministic budget ledger · Gemini 3.8 Flash",
+                        text = "Personalized nutrition & ৳ budget · NutriMate Copilot",
                         fontSize = 12.sp,
                         color = Color.White.copy(alpha = 0.72f),
                         modifier = Modifier.padding(top = 2.dp)
                     )
                 }
 
-                IconButton(
-                    onClick = onDismiss,
-                    modifier = Modifier
-                        .size(36.dp)
-                        .clip(CircleShape)
-                        .background(Color.White.copy(alpha = 0.15f))
-                        .testTag("close_chat_btn")
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Close,
-                        contentDescription = "Close Chat",
-                        tint = Color.White,
-                        modifier = Modifier.size(18.dp)
-                    )
+                    if (uiState.chatMessages.isNotEmpty()) {
+                        IconButton(
+                            onClick = { viewModel.clearChatHistory() },
+                            modifier = Modifier
+                                .size(40.dp)
+                                .clip(CircleShape)
+                                .background(Color.White.copy(alpha = 0.12f))
+                                .testTag("clear_chat_btn")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.DeleteOutline,
+                                contentDescription = "New Chat",
+                                tint = Color.White.copy(alpha = 0.85f),
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
+
+                    IconButton(
+                        onClick = onDismiss,
+                        modifier = Modifier
+                            .size(40.dp)
+                            .clip(CircleShape)
+                            .background(Color.White.copy(alpha = 0.15f))
+                            .testTag("close_chat_btn")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Close Chat",
+                            tint = Color.White,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
                 }
             }
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // Messages List
-            LazyColumn(
-                state = listState,
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-                contentPadding = PaddingValues(vertical = 8.dp)
-            ) {
-                items(uiState.chatMessages, key = { it.id }) { msg ->
-                    ChatBubble(
-                        message = msg,
-                        onConfirmTradeoff = { token -> viewModel.confirmInChatTradeoff(token) },
-                        onDeclineTradeoff = { token -> viewModel.declineInChatTradeoff(token) }
-                    )
+            // Messages List or Empty State
+            if (uiState.chatMessages.isEmpty() && !uiState.isAiThinking) {
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    GlassBox(
+                        modifier = Modifier.fillMaxWidth(),
+                        cornerRadius = 22.dp,
+                        backgroundColor = Color.White.copy(alpha = 0.10f),
+                        borderColor = Color.White.copy(alpha = 0.25f)
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(20.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Text(text = "🥗", fontSize = 36.sp)
+                            Text(
+                                text = "Ask NutriMate AI",
+                                fontSize = 18.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White
+                            )
+                            Text(
+                                text = "Goal: ${uiState.userGoals.dailyCalorieGoal} kcal/day · Budget: ৳${uiState.userGoals.monthlyBudget}/mo. Ask for Bangladeshi high-protein meals, calorie tips, or tap a shortcut below.",
+                                fontSize = 13.sp,
+                                color = Color.White.copy(alpha = 0.78f),
+                                lineHeight = 18.sp
+                            )
+                        }
+                    }
                 }
+            } else {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    contentPadding = PaddingValues(vertical = 8.dp)
+                ) {
+                    items(uiState.chatMessages, key = { it.id }) { msg ->
+                        ChatBubble(
+                            message = msg,
+                            onConfirmTradeoff = { token -> viewModel.confirmInChatTradeoff(token) },
+                            onDeclineTradeoff = { token -> viewModel.declineInChatTradeoff(token) },
+                            onRetry = { msgId -> viewModel.retryChatMessage(msgId) }
+                        )
+                    }
 
-                if (uiState.isAiThinking) {
-                    item(key = "ai_thinking_indicator") {
-                        AiThinkingBubble()
+                    if (uiState.isAiThinking && !uiState.isStreamingResponse) {
+                        item(key = "ai_thinking_indicator") {
+                            AiThinkingBubble()
+                        }
                     }
                 }
             }
 
             // Quick suggestion chips
             val quickChips = listOf(
-                "🍛 I want biriyani for lunch",
+                "🍛 What should I eat for dinner?",
+                "💪 High-protein meals under ৳80",
                 "🥪 Swap snack to fruit cart",
                 "💸 Cheaper dinner",
-                "💪 Is protein shake worth it?",
-                "🥘 Khichuri & Dim for dinner"
+                "🍛 I want biriyani for lunch"
             )
             Row(
                 modifier = Modifier
@@ -190,9 +256,9 @@ fun ChatSheet(
                     Box(
                         modifier = Modifier
                             .clip(RoundedCornerShape(16.dp))
-                            .background(Color.White.copy(alpha = 0.12f))
+                            .background(Color.White.copy(alpha = if (isGenerating) 0.06f else 0.12f))
                             .border(1.dp, Color.White.copy(alpha = 0.25f), RoundedCornerShape(16.dp))
-                            .clickable {
+                            .clickable(enabled = !isGenerating) {
                                 viewModel.sendChatMessage(chipText)
                             }
                             .padding(horizontal = 12.dp, vertical = 7.dp)
@@ -200,7 +266,7 @@ fun ChatSheet(
                         Text(
                             text = chipText,
                             fontSize = 12.sp,
-                            color = Color.White,
+                            color = if (isGenerating) Color.White.copy(alpha = 0.45f) else Color.White,
                             fontWeight = FontWeight.Medium
                         )
                     }
@@ -220,7 +286,7 @@ fun ChatSheet(
                     onValueChange = { inputText = it },
                     placeholder = {
                         Text(
-                            "Message… e.g. Swap my lunch to biriyani",
+                            if (isGenerating) "NutriMate is responding…" else "Ask nutrition, budget, or swap a meal…",
                             color = Color.White.copy(alpha = 0.5f),
                             fontSize = 14.sp
                         )
@@ -229,7 +295,7 @@ fun ChatSheet(
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                     keyboardActions = KeyboardActions(
                         onSend = {
-                            if (inputText.isNotBlank()) {
+                            if (!isGenerating && inputText.isNotBlank()) {
                                 viewModel.sendChatMessage(inputText)
                                 inputText = ""
                             }
@@ -254,21 +320,27 @@ fun ChatSheet(
                         .size(50.dp)
                         .clip(CircleShape)
                         .background(
-                            Brush.verticalGradient(listOf(Color(0xFFB9FFD7), Color(0xFF6AF0A6)))
+                            if (isGenerating) {
+                                Brush.verticalGradient(listOf(Color(0xFFFF8A80), Color(0xFFE53935)))
+                            } else {
+                                Brush.verticalGradient(listOf(Color(0xFFB9FFD7), Color(0xFF6AF0A6)))
+                            }
                         )
                         .clickable {
-                            if (inputText.isNotBlank()) {
+                            if (isGenerating) {
+                                viewModel.cancelChatGeneration()
+                            } else if (inputText.isNotBlank()) {
                                 viewModel.sendChatMessage(inputText)
                                 inputText = ""
                             }
                         }
-                        .testTag("chat_send_btn"),
+                        .testTag(if (isGenerating) "chat_stop_btn" else "chat_send_btn"),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
-                        imageVector = Icons.AutoMirrored.Filled.Send,
-                        contentDescription = "Send",
-                        tint = MintAccentDark,
+                        imageVector = if (isGenerating) Icons.Default.Stop else Icons.AutoMirrored.Filled.Send,
+                        contentDescription = if (isGenerating) "Stop response" else "Send",
+                        tint = if (isGenerating) Color.White else MintAccentDark,
                         modifier = Modifier.size(20.dp)
                     )
                 }
@@ -281,7 +353,8 @@ fun ChatSheet(
 fun ChatBubble(
     message: ChatMessage,
     onConfirmTradeoff: (String) -> Unit = {},
-    onDeclineTradeoff: (String) -> Unit = {}
+    onDeclineTradeoff: (String) -> Unit = {},
+    onRetry: (String) -> Unit = {}
 ) {
     when (message.sender) {
         MessageSender.USER -> {
@@ -318,8 +391,12 @@ fun ChatBubble(
                     GlassBox(
                         modifier = Modifier.fillMaxWidth(),
                         cornerRadius = 18.dp,
-                        backgroundColor = Color.White.copy(alpha = 0.14f),
-                        borderColor = Color.White.copy(alpha = 0.3f)
+                        backgroundColor = if (message.isError) Color(0x33FF6B6B) else Color.White.copy(alpha = 0.14f),
+                        borderColor = when {
+                            message.isError -> Color(0x99FF8A80)
+                            message.isStreaming -> MintAccent.copy(alpha = 0.7f)
+                            else -> Color.White.copy(alpha = 0.3f)
+                        }
                     ) {
                         Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 11.dp)) {
                             Text(
@@ -329,23 +406,47 @@ fun ChatBubble(
                                 lineHeight = 20.sp
                             )
 
-                            if (message.latencyMs != null) {
+                            if (message.isError && message.retryPrompt != null) {
+                                Spacer(modifier = Modifier.height(8.dp))
+                                OutlinedButton(
+                                    onClick = { onRetry(message.id) },
+                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+                                    shape = RoundedCornerShape(12.dp),
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                                    modifier = Modifier
+                                        .height(36.dp)
+                                        .testTag("retry_chat_btn")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Refresh,
+                                        contentDescription = "Retry",
+                                        modifier = Modifier.size(15.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Retry", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                }
+                            } else if (message.isStreaming || message.latencyMs != null) {
                                 Spacer(modifier = Modifier.height(6.dp))
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.End,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    val tagText = if (message.isLocalExecution) {
-                                        "⚡ ${message.latencyMs}ms · on-device"
-                                    } else {
-                                        "☁️ ${message.latencyMs}ms · Gemini 3.8"
+                                    val tagText = when {
+                                        message.isStreaming -> {
+                                            val ttft = message.firstTokenMs?.let { "TTFT ${it}ms · " } ?: ""
+                                            "● ${ttft}streaming…"
+                                        }
+                                        message.isLocalExecution -> "⚡ ${message.latencyMs}ms · on-device"
+                                        message.firstTokenMs != null ->
+                                            "☁️ TTFT ${message.firstTokenMs}ms · ${message.latencyMs}ms · Template"
+                                        else -> "☁️ ${message.latencyMs}ms · Template"
                                     }
                                     Text(
                                         text = tagText,
                                         fontSize = 10.sp,
                                         fontFamily = FontFamily.Monospace,
-                                        color = if (message.isLocalExecution) MintAccentGlow else Color.White.copy(alpha = 0.6f)
+                                        color = if (message.isLocalExecution || message.isStreaming) MintAccentGlow else Color.White.copy(alpha = 0.6f)
                                     )
                                 }
                             }
@@ -451,7 +552,7 @@ fun CollapsibleToolStepCard(
 
     val latencyBadge = when {
         message.latencyMs != null && message.isLocalExecution -> "⚡ ${message.latencyMs}ms · on-device"
-        message.latencyMs != null && !message.isLocalExecution -> "☁️ ${message.latencyMs}ms · Gemini 3.8"
+        message.latencyMs != null && !message.isLocalExecution -> "☁️ ${message.latencyMs}ms · Template"
         message.isLocalExecution -> "⚡ local"
         else -> "☁️ cloud"
     }

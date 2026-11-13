@@ -10,17 +10,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.drawscope.DrawScope
 import com.example.nutrimate.data.weather.WeatherCondition
 import kotlin.math.cos
 import kotlin.math.sin
-import kotlin.random.Random
 
 /**
- * Edge-to-edge Google Weather-styled animated sky background.
- * Paints rich atmospheric gradients that correlate to real-time weather and day/night state,
- * with hardware-accelerated animated weather effects (sun rays, rain streaks, twinkling stars, clouds).
+ * Ambient, deeply blurred atmospheric aura background inspired by time-of-day and weather mood.
+ * Uses soft, drifting mesh-like radial color fields rather than literal sky/weather graphics,
+ * creating a calm, premium backdrop tailored for NutriMate.
  */
 @Composable
 fun WeatherBackground(
@@ -28,301 +25,198 @@ fun WeatherBackground(
     isDay: Boolean,
     modifier: Modifier = Modifier
 ) {
-    val infiniteTransition = rememberInfiniteTransition(label = "weather_anim")
+    val infiniteTransition = rememberInfiniteTransition(label = "ambient_aura")
 
-    // Continuous looping animation drivers
-    val animProgress by infiniteTransition.animateFloat(
+    val driftPhase by infiniteTransition.animateFloat(
         initialValue = 0f,
-        targetValue = 1f,
+        targetValue = (2 * Math.PI).toFloat(),
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 2400, easing = LinearEasing),
+            animation = tween(durationMillis = 18000, easing = LinearEasing),
             repeatMode = RepeatMode.Restart
         ),
-        label = "rain_and_clouds"
+        label = "aura_drift"
     )
 
-    val pulseProgress by infiniteTransition.animateFloat(
-        initialValue = 0.85f,
-        targetValue = 1.15f,
+    val breathScale by infiniteTransition.animateFloat(
+        initialValue = 0.92f,
+        targetValue = 1.08f,
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 3500, easing = FastOutSlowInEasing),
+            animation = tween(durationMillis = 7000, easing = FastOutSlowInEasing),
             repeatMode = RepeatMode.Reverse
         ),
-        label = "sun_pulse"
+        label = "aura_breath"
     )
 
-    val skyColors = remember(condition, isDay) {
-        getSkyGradientColors(condition, isDay)
-    }
-
-    // Pre-generate stable random stars for night
-    val stars = remember {
-        List(45) {
-            StarData(
-                xNorm = Random.nextFloat(),
-                yNorm = Random.nextFloat() * 0.65f,
-                radius = Random.nextFloat() * 2f + 1f,
-                alphaPhase = Random.nextFloat() * 6.28f
-            )
-        }
-    }
-
-    // Pre-generate stable rain streaks
-    val raindrops = remember {
-        List(60) {
-            RaindropData(
-                xNorm = Random.nextFloat(),
-                startYNorm = Random.nextFloat(),
-                length = Random.nextFloat() * 24f + 16f,
-                speed = Random.nextFloat() * 0.7f + 0.8f
-            )
-        }
+    val palette = remember(condition, isDay) {
+        getAmbientPalette(condition, isDay)
     }
 
     Canvas(modifier = modifier.fillMaxSize()) {
-        // 1. Draw Edge-to-Edge Sky Gradient
+        // 1. Deep atmospheric base gradient
         drawRect(
-            brush = Brush.verticalGradient(skyColors)
+            brush = Brush.verticalGradient(palette.baseColors)
         )
 
-        // 2. Render condition-specific weather effects
-        when (condition) {
-            WeatherCondition.CLEAR, WeatherCondition.PARTLY_CLOUDY -> {
-                if (isDay) {
-                    drawSunnyFlare(pulseProgress)
-                    if (condition == WeatherCondition.PARTLY_CLOUDY) {
-                        drawFloatingClouds(animProgress)
-                    }
-                } else {
-                    drawStarryNight(stars, pulseProgress)
-                }
-            }
+        // 2. Soft drifting primary aura orb (top-right)
+        val orb1Center = Offset(
+            x = size.width * (0.78f + 0.08f * cos(driftPhase)),
+            y = size.height * (0.16f + 0.05f * sin(driftPhase))
+        )
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(
+                    palette.primaryOrb.copy(alpha = 0.55f),
+                    palette.primaryOrb.copy(alpha = 0.22f),
+                    Color.Transparent
+                ),
+                center = orb1Center,
+                radius = size.width * 0.95f * breathScale
+            ),
+            center = orb1Center,
+            radius = size.width * 0.95f * breathScale
+        )
 
-            WeatherCondition.CLOUDY, WeatherCondition.FOGGY -> {
-                drawFloatingClouds(animProgress)
-                drawOvercastLayer(condition == WeatherCondition.FOGGY)
-            }
+        // 3. Soft drifting mint/teal accent orb (mid-left)
+        val orb2Center = Offset(
+            x = size.width * (0.18f + 0.07f * sin(driftPhase)),
+            y = size.height * (0.44f + 0.06f * cos(driftPhase))
+        )
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(
+                    palette.secondaryOrb.copy(alpha = 0.45f),
+                    palette.secondaryOrb.copy(alpha = 0.16f),
+                    Color.Transparent
+                ),
+                center = orb2Center,
+                radius = size.width * 0.85f
+            ),
+            center = orb2Center,
+            radius = size.width * 0.85f
+        )
 
-            WeatherCondition.DRIZZLE, WeatherCondition.RAINY, WeatherCondition.HEAVY_RAIN, WeatherCondition.THUNDERSTORM -> {
-                drawRainStreaks(raindrops, animProgress, condition)
-                if (condition == WeatherCondition.THUNDERSTORM) {
-                    drawLightningFlash(pulseProgress)
-                }
-            }
-        }
+        // 4. Lower horizon glow orb (bottom-right)
+        val orb3Center = Offset(
+            x = size.width * (0.68f - 0.06f * cos(driftPhase)),
+            y = size.height * (0.82f + 0.04f * sin(driftPhase))
+        )
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(
+                    palette.tertiaryOrb.copy(alpha = 0.38f),
+                    palette.tertiaryOrb.copy(alpha = 0.12f),
+                    Color.Transparent
+                ),
+                center = orb3Center,
+                radius = size.width * 0.9f * breathScale
+            ),
+            center = orb3Center,
+            radius = size.width * 0.9f * breathScale
+        )
     }
 }
 
-private fun getSkyGradientColors(condition: WeatherCondition, isDay: Boolean): List<Color> {
+private data class AmbientPalette(
+    val baseColors: List<Color>,
+    val primaryOrb: Color,
+    val secondaryOrb: Color,
+    val tertiaryOrb: Color
+)
+
+private fun getAmbientPalette(condition: WeatherCondition, isDay: Boolean): AmbientPalette {
     return if (isDay) {
         when (condition) {
-            WeatherCondition.CLEAR -> listOf(
-                Color(0xFF1565C0), // Rich blue
-                Color(0xFF1E88E5),
-                Color(0xFF42A5F5),
-                Color(0xFF90CAF9),
-                Color(0xFFFFF9C4).copy(alpha = 0.5f) // Warm golden morning horizon
+            WeatherCondition.CLEAR, WeatherCondition.PARTLY_CLOUDY -> AmbientPalette(
+                baseColors = listOf(
+                    Color(0xFF0A192F),
+                    Color(0xFF102A43),
+                    Color(0xFF133A52),
+                    Color(0xFF0B1F33)
+                ),
+                primaryOrb = Color(0xFF3B82F6),   // Soft sky sapphire glow
+                secondaryOrb = Color(0xFF10B981), // Mint/emerald NutriMate accent
+                tertiaryOrb = Color(0xFFF59E0B)   // Subtle warm sunlit amber
             )
-            WeatherCondition.PARTLY_CLOUDY -> listOf(
-                Color(0xFF1976D2),
-                Color(0xFF2196F3),
-                Color(0xFF64B5F6),
-                Color(0xFFBBDEFB)
+            WeatherCondition.CLOUDY, WeatherCondition.FOGGY -> AmbientPalette(
+                baseColors = listOf(
+                    Color(0xFF111827),
+                    Color(0xFF1F2937),
+                    Color(0xFF283548),
+                    Color(0xFF0F172A)
+                ),
+                primaryOrb = Color(0xFF64748B),
+                secondaryOrb = Color(0xFF14B8A6),
+                tertiaryOrb = Color(0xFF475569)
             )
-            WeatherCondition.CLOUDY, WeatherCondition.FOGGY -> listOf(
-                Color(0xFF37474F), // Overcast slate
-                Color(0xFF455A64),
-                Color(0xFF607D8B),
-                Color(0xFF90A4AE)
+            WeatherCondition.DRIZZLE, WeatherCondition.RAINY, WeatherCondition.HEAVY_RAIN -> AmbientPalette(
+                baseColors = listOf(
+                    Color(0xFF081320),
+                    Color(0xFF0F2136),
+                    Color(0xFF16324A),
+                    Color(0xFF091522)
+                ),
+                primaryOrb = Color(0xFF0EA5E9),
+                secondaryOrb = Color(0xFF2DD4BF),
+                tertiaryOrb = Color(0xFF334155)
             )
-            WeatherCondition.DRIZZLE -> listOf(
-                Color(0xFF263238),
-                Color(0xFF37474F),
-                Color(0xFF455A64),
-                Color(0xFF546E7A)
-            )
-            WeatherCondition.RAINY, WeatherCondition.HEAVY_RAIN -> listOf(
-                Color(0xFF1A252F), // Moody storm
-                Color(0xFF2C3E50),
-                Color(0xFF34495E),
-                Color(0xFF415B76)
-            )
-            WeatherCondition.THUNDERSTORM -> listOf(
-                Color(0xFF120E22), // Turbulent violet
-                Color(0xFF1E1738),
-                Color(0xFF2B204F),
-                Color(0xFF3B2E68)
+            WeatherCondition.THUNDERSTORM -> AmbientPalette(
+                baseColors = listOf(
+                    Color(0xFF0B0A1A),
+                    Color(0xFF161332),
+                    Color(0xFF1F1D45),
+                    Color(0xFF0D1124)
+                ),
+                primaryOrb = Color(0xFF6366F1),
+                secondaryOrb = Color(0xFF10B981),
+                tertiaryOrb = Color(0xFF7C3AED)
             )
         }
     } else {
-        // Night Skies
         when (condition) {
-            WeatherCondition.CLEAR, WeatherCondition.PARTLY_CLOUDY -> listOf(
-                Color(0xFF060914), // Deep space
-                Color(0xFF0C142B),
-                Color(0xFF142042),
-                Color(0xFF1C2C59)
+            WeatherCondition.CLEAR, WeatherCondition.PARTLY_CLOUDY -> AmbientPalette(
+                baseColors = listOf(
+                    Color(0xFF050B18),
+                    Color(0xFF0A162D),
+                    Color(0xFF0E213F),
+                    Color(0xFF060E1F)
+                ),
+                primaryOrb = Color(0xFF2563EB),
+                secondaryOrb = Color(0xFF059669),
+                tertiaryOrb = Color(0xFF4F46E5)
             )
-            WeatherCondition.CLOUDY, WeatherCondition.FOGGY -> listOf(
-                Color(0xFF0F141C),
-                Color(0xFF1A222E),
-                Color(0xFF263040),
-                Color(0xFF323F52)
+            WeatherCondition.CLOUDY, WeatherCondition.FOGGY -> AmbientPalette(
+                baseColors = listOf(
+                    Color(0xFF090D16),
+                    Color(0xFF121A28),
+                    Color(0xFF1B2638),
+                    Color(0xFF0A101B)
+                ),
+                primaryOrb = Color(0xFF475569),
+                secondaryOrb = Color(0xFF0D9488),
+                tertiaryOrb = Color(0xFF334155)
             )
-            WeatherCondition.DRIZZLE, WeatherCondition.RAINY, WeatherCondition.HEAVY_RAIN -> listOf(
-                Color(0xFF0A1017),
-                Color(0xFF131D28),
-                Color(0xFF1C2B3A),
-                Color(0xFF283B4F)
+            WeatherCondition.DRIZZLE, WeatherCondition.RAINY, WeatherCondition.HEAVY_RAIN -> AmbientPalette(
+                baseColors = listOf(
+                    Color(0xFF050D17),
+                    Color(0xFF0B192B),
+                    Color(0xFF11263D),
+                    Color(0xFF07111E)
+                ),
+                primaryOrb = Color(0xFF0284C7),
+                secondaryOrb = Color(0xFF10B981),
+                tertiaryOrb = Color(0xFF1E3A5F)
             )
-            WeatherCondition.THUNDERSTORM -> listOf(
-                Color(0xFF0A0716),
-                Color(0xFF140E28),
-                Color(0xFF1E163B),
-                Color(0xFF2C1F52)
+            WeatherCondition.THUNDERSTORM -> AmbientPalette(
+                baseColors = listOf(
+                    Color(0xFF070512),
+                    Color(0xFF120D29),
+                    Color(0xFF1B153B),
+                    Color(0xFF090B1A)
+                ),
+                primaryOrb = Color(0xFF7C3AED),
+                secondaryOrb = Color(0xFF14B8A6),
+                tertiaryOrb = Color(0xFF3730A3)
             )
         }
     }
 }
-
-private fun DrawScope.drawSunnyFlare(pulse: Float) {
-    val sunCenter = Offset(size.width * 0.82f, size.height * 0.16f)
-    val baseRadius = size.width * 0.18f
-
-    // Outer warm glow ring
-    drawCircle(
-        brush = Brush.radialGradient(
-            colors = listOf(
-                Color(0x66FFF59D),
-                Color(0x33FFE082),
-                Color(0x00FFD54F)
-            ),
-            center = sunCenter,
-            radius = baseRadius * 2.4f * pulse
-        ),
-        center = sunCenter,
-        radius = baseRadius * 2.4f * pulse
-    )
-
-    // Inner bright sun orb
-    drawCircle(
-        brush = Brush.radialGradient(
-            colors = listOf(
-                Color(0xFFFFFDE7),
-                Color(0xFFFFF176),
-                Color(0x80FFD54F)
-            ),
-            center = sunCenter,
-            radius = baseRadius * pulse
-        ),
-        center = sunCenter,
-        radius = baseRadius * pulse
-    )
-}
-
-private fun DrawScope.drawStarryNight(stars: List<StarData>, pulse: Float) {
-    // Soft moon glow at top right
-    val moonCenter = Offset(size.width * 0.85f, size.height * 0.14f)
-    drawCircle(
-        brush = Brush.radialGradient(
-            colors = listOf(
-                Color(0x44E0E7FF),
-                Color(0x22C7D2FE),
-                Color(0x00A5B4FC)
-            ),
-            center = moonCenter,
-            radius = size.width * 0.35f
-        ),
-        center = moonCenter,
-        radius = size.width * 0.35f
-    )
-
-    // Twinkling stars
-    for (star in stars) {
-        val twinkle = (sin(star.alphaPhase + pulse * 3.14f) + 1f) / 2f
-        val alpha = (0.25f + twinkle * 0.75f).coerceIn(0.1f, 1f)
-        drawCircle(
-            color = Color.White.copy(alpha = alpha),
-            radius = star.radius,
-            center = Offset(star.xNorm * size.width, star.yNorm * size.height)
-        )
-    }
-}
-
-private fun DrawScope.drawFloatingClouds(progress: Float) {
-    val cloudColor = Color.White.copy(alpha = 0.18f)
-    val width = size.width
-    val height = size.height
-
-    // Two drifting cloud puff paths
-    val offset1 = (progress * width) - (width * 0.3f)
-    val offset2 = ((progress + 0.5f) % 1f) * width - (width * 0.2f)
-
-    drawCircle(
-        color = cloudColor,
-        radius = width * 0.28f,
-        center = Offset(offset1, height * 0.18f)
-    )
-    drawCircle(
-        color = cloudColor,
-        radius = width * 0.22f,
-        center = Offset(offset1 + width * 0.25f, height * 0.20f)
-    )
-
-    drawCircle(
-        color = cloudColor.copy(alpha = 0.12f),
-        radius = width * 0.32f,
-        center = Offset(offset2, height * 0.32f)
-    )
-}
-
-private fun DrawScope.drawOvercastLayer(isFog: Boolean) {
-    val tint = if (isFog) Color.White.copy(alpha = 0.15f) else Color.Black.copy(alpha = 0.10f)
-    drawRect(color = tint)
-}
-
-private fun DrawScope.drawRainStreaks(
-    drops: List<RaindropData>,
-    progress: Float,
-    condition: WeatherCondition
-) {
-    val streakColor = Color(0xCCB0BEC5)
-    val width = size.width
-    val height = size.height
-    val isHeavy = condition == WeatherCondition.HEAVY_RAIN || condition == WeatherCondition.THUNDERSTORM
-
-    for (drop in drops) {
-        val currentYNorm = (drop.startYNorm + progress * drop.speed) % 1.0f
-        val x = drop.xNorm * width - (currentYNorm * 40f) // Angled fall
-        val y = currentYNorm * height
-        val length = if (isHeavy) drop.length * 1.6f else drop.length
-
-        drawLine(
-            color = streakColor,
-            start = Offset(x, y),
-            end = Offset(x - 8f, y + length),
-            strokeWidth = if (isHeavy) 2.2f else 1.4f
-        )
-    }
-}
-
-private fun DrawScope.drawLightningFlash(pulse: Float) {
-    if (pulse > 1.10f) {
-        val flashAlpha = ((pulse - 1.10f) * 6f).coerceIn(0f, 0.35f)
-        drawRect(color = Color(0xFFE0E7FF).copy(alpha = flashAlpha))
-    }
-}
-
-private data class StarData(
-    val xNorm: Float,
-    val yNorm: Float,
-    val radius: Float,
-    val alphaPhase: Float
-)
-
-private data class RaindropData(
-    val xNorm: Float,
-    val startYNorm: Float,
-    val length: Float,
-    val speed: Float
-)

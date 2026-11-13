@@ -19,6 +19,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.BlurredEdgeTreatment
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
@@ -153,34 +154,40 @@ fun AppContent(
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        // 1. Dynamic Weather Background across ALL panels:
-        // Rendered crisp on HOME; beautifully blurred with Gaussian blur on all other pages!
+        // 1. Super-blurry ambient atmospheric background across ALL screens (including Home)
         WeatherBackground(
             condition = weatherCondition,
             isDay = isDayTime,
             modifier = Modifier
                 .fillMaxSize()
-                .then(
-                    if (!isHomeTab) Modifier.blur(25.dp) else Modifier
+                .blur(
+                    radius = if (isHomeTab) 72.dp else 88.dp,
+                    edgeTreatment = BlurredEdgeTreatment.Unbounded
                 )
         )
 
-        // 2. Frosted glass scrim overlay on other pages to ensure maximum text & card legibility
-        if (!isHomeTab) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(
-                        Brush.verticalGradient(
-                            colors = listOf(
-                                Color(0xBF081224),
-                                Color(0xD90E1B38),
-                                Color(0xF2080E1E)
+        // 2. Soft frosted scrim overlay so cards & welcome text remain crisp and legible everywhere
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(
+                    Brush.verticalGradient(
+                        colors = if (isHomeTab) {
+                            listOf(
+                                Color(0x45060E1C),
+                                Color(0x660A1529),
+                                Color(0x88060D1A)
                             )
-                        )
+                        } else {
+                            listOf(
+                                Color(0xB8081224),
+                                Color(0xD60E1B38),
+                                Color(0xF0080E1E)
+                            )
+                        }
                     )
-            )
-        }
+                )
+        )
 
         // 3. Screen content container
         Box(

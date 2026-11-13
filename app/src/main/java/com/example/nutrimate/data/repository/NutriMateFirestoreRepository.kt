@@ -2,12 +2,14 @@ package com.example.nutrimate.data.repository
 
 import android.util.Log
 import com.example.nutrimate.data.model.CentralFoodEntity
+import com.example.nutrimate.data.model.ChatMessageEntity
 import com.example.nutrimate.data.model.MealItemEntity
 import com.example.nutrimate.data.model.PartnerRestaurantEntity
 import com.example.nutrimate.data.model.PaymentRecordEntity
 import com.example.nutrimate.data.model.UserProfileEntity
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.Query
 import com.google.firebase.firestore.snapshots
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -86,6 +88,11 @@ class NutriMateFirestoreRepository(
         val mealDoc = db.collection("users").document(userId).collection("meals").document(meal.id)
         val snapshot = mealDoc.get().await()
 
+        val coords = com.example.nutrimate.data.location.MapDirectionsHelper.resolveCoordinates(
+            placeName = meal.selectedPlace,
+            storedLat = meal.latitude,
+            storedLon = meal.longitude
+        )
         val data = hashMapOf<String, Any>(
             "id" to meal.id,
             "name" to meal.name,
@@ -97,7 +104,9 @@ class NutriMateFirestoreRepository(
             "selectedTitle" to meal.selectedTitle,
             "selectedPrice" to meal.selectedPrice,
             "isPartner" to meal.isPartner,
-            "discountTag" to meal.discountTag
+            "discountTag" to meal.discountTag,
+            "latitude" to coords.latitude,
+            "longitude" to coords.longitude
         )
 
         if (!snapshot.exists()) {
@@ -172,8 +181,14 @@ class NutriMateFirestoreRepository(
      */
     suspend fun seedAreaRestaurantsAndFoods(area: com.example.nutrimate.data.location.CampusArea) {
         try {
-            // 1. Seed partner restaurants
+            // 1. Seed partner restaurants with exact coordinates
             for (restaurant in area.defaultRestaurants) {
+                val geo = com.example.nutrimate.data.location.MapDirectionsHelper.resolveCoordinates(
+                    placeName = restaurant.name,
+                    storedLat = restaurant.latitude,
+                    storedLon = restaurant.longitude,
+                    fallbackArea = area
+                )
                 val data = hashMapOf<String, Any>(
                     "id" to restaurant.id,
                     "name" to restaurant.name,
@@ -181,13 +196,22 @@ class NutriMateFirestoreRepository(
                     "areaName" to restaurant.areaName,
                     "cuisine" to restaurant.cuisine,
                     "discountPercentage" to restaurant.discountPercentage,
-                    "discountTag" to restaurant.discountTag
+                    "discountTag" to restaurant.discountTag,
+                    "latitude" to geo.latitude,
+                    "longitude" to geo.longitude,
+                    "address" to restaurant.address.ifBlank { geo.address }
                 )
                 db.collection("partner_restaurants").document(restaurant.id).set(data).await()
             }
 
-            // 2. Seed central foods
+            // 2. Seed central foods with restaurant coordinates
             for (meal in area.defaultMeals) {
+                val geo = com.example.nutrimate.data.location.MapDirectionsHelper.resolveCoordinates(
+                    placeName = meal.place,
+                    storedLat = meal.latitude,
+                    storedLon = meal.longitude,
+                    fallbackArea = area
+                )
                 val data = hashMapOf<String, Any>(
                     "id" to meal.id,
                     "name" to meal.name,
@@ -199,7 +223,9 @@ class NutriMateFirestoreRepository(
                     "isPartner" to meal.isPartner,
                     "discountTag" to meal.discountTag,
                     "areaId" to meal.areaId,
-                    "areaName" to meal.areaName
+                    "areaName" to meal.areaName,
+                    "latitude" to geo.latitude,
+                    "longitude" to geo.longitude
                 )
                 db.collection("central_foods").document(meal.id).set(data).await()
             }
@@ -220,6 +246,12 @@ class NutriMateFirestoreRepository(
 
             for (slot in slots) {
                 val topMeal = area.defaultMeals.find { it.slot.equals(slot, ignoreCase = true) } ?: continue
+                val geo = com.example.nutrimate.data.location.MapDirectionsHelper.resolveCoordinates(
+                    placeName = topMeal.place,
+                    storedLat = topMeal.latitude,
+                    storedLon = topMeal.longitude,
+                    fallbackArea = area
+                )
                 val entity = MealItemEntity(
                     id = slot,
                     name = slot.replaceFirstChar { it.uppercase() },
@@ -231,7 +263,9 @@ class NutriMateFirestoreRepository(
                     selectedTitle = topMeal.name,
                     selectedPrice = topMeal.priceTk,
                     isPartner = topMeal.isPartner,
-                    discountTag = topMeal.discountTag
+                    discountTag = topMeal.discountTag,
+                    latitude = geo.latitude,
+                    longitude = geo.longitude
                 )
                 saveMeal(userId, entity)
             }
@@ -256,9 +290,9 @@ class NutriMateFirestoreRepository(
             if (!userDoc.exists()) {
                 val initialProfile = UserProfileEntity(
                     userId = userId,
-                    name = if (displayName.isNotBlank()) displayName else "Dhruv",
-                    phone = "+880 1712 345678",
-                    city = "Dhaka",
+                    name = displayName.trim().ifBlank { "Student" },
+                    phone = "",
+                    city = "",
                     age = 21,
                     heightCm = 172,
                     weightKg = 64,
@@ -266,8 +300,8 @@ class NutriMateFirestoreRepository(
                     allowLocation = true,
                     goesToGym = true,
                     isStudent = true,
-                    university = area.universities.firstOrNull() ?: "BUET",
-                    monthlyBudget = 7000,
+                    university = "",
+                    monthlyBudget = 6000,
                     totalSpentThisMonth = 0,
                     totalSavedFromDiscounts = 0,
                     unallocatedPaisa = 0L,
@@ -281,6 +315,61 @@ class NutriMateFirestoreRepository(
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error seeding initial user data in Firestore", e)
+        }
+    }
+
+    suspend fun loadRecentChatMessages(userId: String, limit: Long = 20L): List<ChatMessageEntity> {
+        return try {
+            val snapshot = db.collection("users").document(userId)
+                .collection("chat_messages")
+                .orderBy("timestamp", Query.Direction.DESCENDING)
+                .limit(limit)
+                .get()
+                .await()
+            snapshot.toObjects(ChatMessageEntity::class.java).reversed()
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to load recent chat messages", e)
+            emptyList()
+        }
+    }
+
+    suspend fun saveCompletedChatMessage(userId: String, message: ChatMessageEntity) {
+        if (message.content.isBlank() || message.id.isBlank()) return
+        try {
+            val docId = message.id.replace(Regex("[^a-zA-Z0-9_\\-]"), "_").take(128)
+            val data = hashMapOf<String, Any>(
+                "id" to docId,
+                "sender" to message.sender,
+                "content" to message.content.take(8000),
+                "timestamp" to message.timestamp.coerceAtLeast(1L),
+                "isLocalExecution" to message.isLocalExecution
+            )
+            message.latencyMs?.let { data["latencyMs"] = it.coerceAtLeast(0L) }
+            message.firstTokenMs?.let { data["firstTokenMs"] = it.coerceAtLeast(0L) }
+
+            db.collection("users").document(userId)
+                .collection("chat_messages").document(docId)
+                .set(data)
+                .await()
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to persist chat message ${message.id}", e)
+        }
+    }
+
+    suspend fun clearChatHistory(userId: String) {
+        try {
+            val snapshot = db.collection("users").document(userId)
+                .collection("chat_messages")
+                .limit(50)
+                .get()
+                .await()
+            if (!snapshot.isEmpty) {
+                val batch = db.batch()
+                snapshot.documents.forEach { batch.delete(it.reference) }
+                batch.commit().await()
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to clear chat history", e)
         }
     }
 }

@@ -27,9 +27,14 @@ class NutriMateOnDeviceRouter {
         val startTime = System.currentTimeMillis()
         val lower = prompt.trim().lowercase()
 
-        // 1. Detect if it's explicitly a nutrition/advice inquiry (Food question)
-        val isFoodQuestion = isNutritionalQuestion(lower)
-        if (isFoodQuestion) {
+        // 1. Detect advisory/nutrition/recommendation questions that should go to personalized Gemini AI
+        //    (unless user explicitly asks to swap/change/replace/switch/order/apply to their meal plan)
+        val explicitMutationAction = listOf(
+            "swap", "switch", "replace", "change", "set my", "update my", "put ",
+            "i want ", "order ", "cheaper dinner", "cheaper lunch", "cheaper breakfast", "cheaper snack"
+        ).any { lower.contains(it) }
+
+        if (!explicitMutationAction && isNutritionalOrAdvisoryQuestion(lower)) {
             val elapsed = System.currentTimeMillis() - startTime
             return RouterResult(
                 isPlanChange = false,
@@ -37,14 +42,10 @@ class NutriMateOnDeviceRouter {
             )
         }
 
-        // 2. Detect meal change indicators & popular Bangladeshi food items
+        // 2. Detect explicit meal plan change indicators
         val changeKeywords = listOf(
-            "swap", "change", "want", "eat", "have", "replace", "switch", "order",
-            "get", "choose", "put", "take", "add", "craving", "kacchi", "biriyani",
-            "khichuri", "burger", "paratha", "rice", "curry", "noodles", "roast",
-            "roll", "pasta", "shingara", "beef", "chicken", "fish", "dal", "dim", "egg",
-            "polao", "tehari", "morog", "kabab", "naan", "grill", "haleem", "fuchka",
-            "chotpoti", "somosa", "cha", "tea", "lassi", "borhani", "fruit"
+            "swap", "change", "want", "replace", "switch", "order",
+            "choose", "put", "add", "craving", "cheaper"
         )
 
         val matchedKeywords = changeKeywords.filter { lower.contains(it) }
@@ -64,8 +65,8 @@ class NutriMateOnDeviceRouter {
                 lower.contains("shokal") || lower.contains("dupur") ||
                 lower.contains("bikel") || lower.contains("raat")
 
-        if (!hasChangeKeyword && !hasSlotMention && !lower.contains("cheaper") && !lower.contains("alternative")) {
-            // General food question or conversational remark
+        if (!hasChangeKeyword && !lower.contains("alternative")) {
+            // General food question, greeting, calorie inquiry, or conversational remark -> Tier 2 Gemini
             val elapsed = System.currentTimeMillis() - startTime
             return RouterResult(
                 isPlanChange = false,
@@ -79,10 +80,10 @@ class NutriMateOnDeviceRouter {
         // Extract max price constraint if specified (e.g. "under 100", "below 80 tk", "within 120", "max 75")
         val maxPrice = extractMaxPrice(lower)
 
-        val isPlanMutation = extractedQuery.isNotBlank() ||
+        val isPlanMutation = hasChangeKeyword && (extractedQuery.isNotBlank() ||
                 lower.contains("cheaper") ||
                 lower.contains("alternative") ||
-                hasChangeKeyword
+                hasSlotMention)
 
         val elapsed = System.currentTimeMillis() - startTime
         return RouterResult(
@@ -96,14 +97,16 @@ class NutriMateOnDeviceRouter {
         )
     }
 
-    private fun isNutritionalQuestion(text: String): Boolean {
+    private fun isNutritionalOrAdvisoryQuestion(text: String): Boolean {
         val questionTriggers = listOf(
-            "is a protein", "is protein", "worth it", "how much protein", "how many calories",
-            "is it healthy", "nutrition", "benefit", "explain", "tell me about", "what is",
-            "why should", "advice", "suggest general", "difference between", "gym", "creatine",
-            "how to gain", "how to lose", "macro", "macros", "diet plan"
+            "what should i", "what can i", "recommend", "suggest", "advice", "best", "healthy",
+            "calorie", "calories", "kcal", "protein", "carb", "fat", "macro", "macros",
+            "worth it", "how much", "how many", "is it ", "is a ", "are ", "can i eat",
+            "should i eat", "benefit", "explain", "tell me", "what is", "why ", "compare",
+            "difference between", "gym", "creatine", "gain", "lose", "diet", "budget",
+            "remaining", "left today", "hi", "hello", "hey", "salam", "help"
         )
-        return questionTriggers.any { text.contains(it) }
+        return text.endsWith("?") || questionTriggers.any { text.contains(it) }
     }
 
     private fun extractFoodQuery(text: String): String {
