@@ -2,17 +2,27 @@ package com.example.nutrimate.data.feast
 
 import android.util.Log
 import com.example.nutrimate.BuildConfig
+import com.example.nutrimate.data.location.CampusArea
+import com.example.nutrimate.data.location.CampusLocationManager
+import com.example.nutrimate.data.mcp.McpRemoteServerConfig
+import com.example.nutrimate.data.mcp.McpToolRegistry
+import com.example.nutrimate.data.mcp.McpToolSource
+import com.example.nutrimate.data.mcp.NutriMateTurnToolContext
+import com.example.nutrimate.data.mcp.buildNutriMateLocalMcpTools
+import com.example.nutrimate.data.model.RestaurantWithDistance
 import com.example.nutrimate.data.repository.NutriMateFirestoreRepository
 import com.example.nutrimate.model.ChatMessage
 import com.example.nutrimate.model.MealSlot
 import com.example.nutrimate.model.MessageSender
 import com.example.nutrimate.model.NutriMateUserContext
 import com.google.firebase.Firebase
-import com.google.firebase.ai.TemplateGenerativeModel
+import com.google.firebase.ai.Chat
+import com.google.firebase.ai.GenerativeModel
 import com.google.firebase.ai.ai
 import com.google.firebase.ai.type.Content
-import com.google.firebase.ai.type.PublicPreviewAPI
+import com.google.firebase.ai.type.FunctionCallPart
 import com.google.firebase.ai.type.content
+import com.google.firebase.ai.type.generationConfig
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
@@ -23,78 +33,60 @@ private const val TAG = "NutriMateChatEngine"
 private const val AI_LOG_TAG = "NUTRIMATE_AI"
 private const val MAX_HISTORY_TURNS = 10
 private const val STREAM_TIMEOUT_MS = 45_000L
+private const val MAX_TOOL_HOPS = 5
 
 /**
- * Production-grade Two-Tier Hybrid AI Engine:
- * - Tier 1: On-Device Router & Deterministic Gatekeeper (<15ms)
- *   Locally evaluates budget rules, searches the active campus catalog, and validates tokens
- *   without waiting for multi-turn cloud round-trips.
- * - Tier 2: Real-Time Streaming via Firebase AI Logic Server Prompt Template (`nutrimate-copilot-v1`)
- *   Streams tokens immediately as they arrive, injects structured live user context into template inputs,
- *   maintains bounded multi-turn conversation memory, and emits NUTRIMATE_AI latency telemetry.
+ * Agentic Tool-Calling AI Engine powered by Gemini 3.5 Flash-Lite (`gemini-3.5-flash-lite`)
+ * via Firebase AI Logic and an MCP-compatible `McpToolRegistry`.
+ *
+ * - Gemini autonomously decides when to answer directly vs invoke typed domain tools.
+ * - All local tools (`get_user_context`, `search_campus_menu`, `get_nearby_restaurants`,
+ *   `check_meal_budget`, `find_funding_options`, `propose_meal_swap`, `log_manual_meal`)
+ *   share the same `McpTool` contract as future remote HTTP MCP server tools.
+ * - Strict Human-in-the-Loop Gate: swaps and logs are staged as proposals requiring explicit
+ *   user confirmation in chat before modifying meal slots or budget reserves.
  */
-@OptIn(PublicPreviewAPI::class)
 class NutriMateChatEngine(
     val toolsGatekeeper: NutriMateAiToolsGatekeeper
 ) {
     companion object {
-        const val PROMPT_TEMPLATE_ID = "nutrimate-copilot-v1"
-
-        fun buildTemplateInputs(
-            userText: String,
-            userContext: NutriMateUserContext,
-            historyText: String = ""
-        ): Map<String, Any> = buildMap {
-            val contextJson = userContext.toCompactJson()
-            // Common prompt / user message variable names for server Dotprompt templates
-            put("user_message", userText)
-            put("userMessage", userText)
-            put("message", userText)
-            put("prompt", userText)
-            put("query", userText)
-            put("user_input", userText)
-            put("userInput", userText)
-            // Structured live user & budget context
-            put("user_context", contextJson)
-            put("userContext", contextJson)
-            put("context", contextJson)
-            // Granular context variables in case the template binds individual placeholders
-            put("user_name", userContext.userName)
-            put("userName", userContext.userName)
-            put("user_goal", userContext.userGoal)
-            put("campus_area", userContext.campusArea)
-            put("university", userContext.university)
-            put("daily_calorie_target", userContext.dailyCalorieTarget)
-            put("planned_calories_today", userContext.plannedCaloriesToday)
-            put("remaining_calories_today", userContext.remainingCaloriesToday)
-            put("monthly_budget_tk", userContext.monthlyBudgetTk)
-            put("remaining_monthly_budget_tk", userContext.remainingMonthlyBudgetTk)
-            put("today_allowance_tk", userContext.todaySlotAllowanceTotalTk)
-            put("unallocated_reserve_tk", userContext.unallocatedReserveTk)
-            put("dietary_preferences", userContext.dietaryPreferences.joinToString(", "))
-            put("planned_meals_today", userContext.plannedMealsToday.joinToString("; "))
-            put("nearby_partner_deals", userContext.nearbyPartnerDeals.joinToString("; "))
-            put("date", userContext.dateString)
-            if (historyText.isNotBlank()) {
-                put("chat_history", historyText)
-                put("conversation_history", historyText)
-            }
-        }
+        const val MODEL_NAME = "gemini-3.5-flash-lite"
     }
-
-    val onDeviceRouter = NutriMateOnDeviceRouter()
 
     private val totalRequests = AtomicInteger(0)
     private val errorCount = AtomicInteger(0)
     private val timeoutCount = AtomicInteger(0)
 
     @Volatile
-    private var templateSupportsChatHistory: Boolean = true
+    private var activeTurnContext: NutriMateTurnToolContext? = null
+
+    val toolRegistry = McpToolRegistry().apply {
+        val localTools = buildNutriMateLocalMcpTools(
+            toolsGatekeeper = toolsGatekeeper,
+            turnContextProvider = { activeTurnContext }
+        )
+        registerTools(localTools)
+    }
 
     /** Last cloud failure, so UI/logs can surface exact failure diagnostics. */
     @Volatile
     var lastCloudError: String? = null
         private set
+
+    /**
+     * Programmatic hook to attach a remote HTTP MCP server's tools into the active Gemini agent loop.
+     */
+    suspend fun attachRemoteMcpServer(config: McpRemoteServerConfig): Int {
+        val count = toolRegistry.attachRemoteServer(config)
+        if (count > 0) {
+            // Rebind generative model lazily so newly discovered remote MCP tools are included
+            synchronized(this) {
+                cachedModel = null
+                chatSession = null
+            }
+        }
+        return count
+    }
 
     fun describeError(e: Throwable): String = when {
         e is TimeoutCancellationException ->
@@ -104,34 +96,60 @@ class NutriMateChatEngine(
             "App Check / permission rejected (ensure Firebase AI Logic is enabled and debug token is registered)."
         e.message?.contains("not found", ignoreCase = true) == true ||
             e.message?.contains("404") == true ->
-            "Prompt template \"$PROMPT_TEMPLATE_ID\" or its model was not found in this Firebase project."
-        e.message?.contains("INVALID_ARGUMENT", ignoreCase = true) == true ||
-            e.message?.contains("schema", ignoreCase = true) == true ->
-            "Prompt template \"$PROMPT_TEMPLATE_ID\" rejected inputs: ${e.localizedMessage ?: e.javaClass.simpleName}"
+            "Configured model \"$MODEL_NAME\" was not found for this Firebase project/backend."
         e.message?.contains("Unable to resolve host", ignoreCase = true) == true ||
             e.message?.contains("network", ignoreCase = true) == true ->
             "Network unavailable. Check your internet connection and tap Retry."
         else -> e.localizedMessage ?: e.javaClass.simpleName
     }
 
-    /**
-     * Server-managed Firebase AI Logic prompt template model (`nutrimate-copilot-v1`),
-     * initialized lazily and reused across requests.
-     */
-    private val templateModel: TemplateGenerativeModel by lazy {
-        val initStart = System.currentTimeMillis()
-        val model = Firebase.ai.templateGenerativeModel()
-        Log.d(
-            AI_LOG_TAG,
-            "TemplateGenerativeModel ($PROMPT_TEMPLATE_ID) initialized lazily in ${System.currentTimeMillis() - initStart}ms"
-        )
-        model
+    @Volatile
+    private var cachedModel: GenerativeModel? = null
+
+    private fun getOrCreateModel(): GenerativeModel {
+        cachedModel?.let { return it }
+        synchronized(this) {
+            cachedModel?.let { return it }
+            val initStart = System.currentTimeMillis()
+            val model = Firebase.ai.generativeModel(
+                modelName = MODEL_NAME,
+                generationConfig = generationConfig {
+                    temperature = 0.35f
+                    topP = 0.9f
+                    maxOutputTokens = 600
+                },
+                tools = listOf(toolRegistry.getGeminiTool()),
+                systemInstruction = content {
+                    text(
+                        """
+                        You are NutriMate AI, a smart, warm, and practical personalized nutrition & student food-budget copilot in Bangladesh.
+
+                        TOOL USE & REASONING RULES:
+                        1. You have live MCP-compatible tools. Never guess menu prices, restaurant distances, or user budget balances—call `search_campus_menu`, `get_nearby_restaurants`, `get_user_context`, `check_meal_budget`, and `find_funding_options` whenever the user asks about campus dishes, nearby deals, budget status, or meal changes.
+                        2. Simple nutrition/calorie knowledge questions (e.g., "how much protein in 2 eggs?") can be answered directly without tools using the USER_CONTEXT provided in the turn.
+                        3. Meal Swap Workflow (MANDATORY):
+                           - First call `search_campus_menu` to find the real `item_id`, price in ৳, and kcal.
+                           - Then call `check_meal_budget(slot, item_id)` to verify slot allowance.
+                           - If `ok=false` (`over_budget`), call `find_funding_options(slot, item_id)` to check unallocated reserve or feast sacrifice.
+                           - Whenever the student wants to swap/change/choose a meal—or asks you to apply an option—call `propose_meal_swap(slot, item_id, token)`.
+                           - NEVER claim a meal has already been swapped or saved! Always tell the student clearly what will change (dish, price ৳, kcal, and whether it fits allowance, draws from unallocated reserve, or cancels a feast) and ask them to tap Confirm below.
+                        4. Off-catalog manual meals: If the user asks to log a custom/off-menu meal they ate, call `log_manual_meal(...)` and ask them to tap Confirm below.
+                        5. Persona & Clarity: Think in Bangladeshi Taka (৳). Keep responses concise, structured, and grounded strictly in tool outputs and USER_CONTEXT. Never diagnose medical conditions or recommend extreme deficits.
+                        """.trimIndent()
+                    )
+                }
+            )
+            Log.d(
+                AI_LOG_TAG,
+                "Model $MODEL_NAME initialized lazily in ${System.currentTimeMillis() - initStart}ms with ${toolRegistry.getRegisteredToolNames().size} MCP tools"
+            )
+            cachedModel = model
+            return model
+        }
     }
 
-    /**
-     * Bounded multi-turn conversation history preserved across turns.
-     */
-    private val conversationHistory = mutableListOf<Content>()
+    private var chatSession: Chat? = null
+    private var hydratedHistory: List<Content> = emptyList()
 
     /**
      * Hydrates multi-turn memory from capped recent persisted user/assistant turns.
@@ -143,342 +161,71 @@ class NutriMateChatEngine(
             .filter { it.sender == MessageSender.USER || it.sender == MessageSender.ASSISTANT }
             .takeLast(MAX_HISTORY_TURNS)
 
-        conversationHistory.clear()
+        val contentList = mutableListOf<Content>()
         for (msg in turns) {
             val role = if (msg.sender == MessageSender.USER) "user" else "model"
-            // Avoid priming empty conversation with only a model greeting
-            if (conversationHistory.isEmpty() && role == "model") continue
-            conversationHistory.add(content(role) { text(msg.content.take(1500)) })
+            if (contentList.isEmpty() && role == "model") continue
+            contentList.add(content(role) { text(msg.content.take(1500)) })
         }
-        Log.d(AI_LOG_TAG, "Hydrated multi-turn session with ${conversationHistory.size} persisted turns")
+        hydratedHistory = contentList
+        chatSession = null
+        Log.d(AI_LOG_TAG, "Hydrated multi-turn memory with ${contentList.size} persisted turns")
     }
 
     /**
-     * Resets or clears the active chat history (e.g. on New Chat or account switch).
+     * Resets or clears the active chat session (e.g. on New Chat or account switch).
      */
     @Synchronized
     fun resetChatSession() {
-        conversationHistory.clear()
+        chatSession = null
+        hydratedHistory = emptyList()
         Log.d(AI_LOG_TAG, "Chat session reset")
     }
 
     @Synchronized
-    private fun snapshotHistory(): List<Content> = conversationHistory.toList()
-
-    @Synchronized
-    private fun appendCompletedTurn(userMessage: String, modelResponse: String) {
-        conversationHistory.add(content("user") { text(userMessage.take(1500)) })
-        conversationHistory.add(content("model") { text(modelResponse.take(1500)) })
-        val maxEntries = MAX_HISTORY_TURNS * 2
-        while (conversationHistory.size > maxEntries) {
-            conversationHistory.removeAt(0)
+    private fun getOrCreateChatSession(): Chat {
+        chatSession?.let { return it }
+        val model = getOrCreateModel()
+        val session = if (hydratedHistory.isNotEmpty()) {
+            model.startChat(history = hydratedHistory)
+        } else {
+            model.startChat()
         }
-    }
-
-    @Synchronized
-    private fun formatHistoryForTemplateInput(): String {
-        if (conversationHistory.isEmpty()) return ""
-        return conversationHistory.takeLast(6).joinToString("\n") { entry ->
-            val speaker = if (entry.role == "user") "Student" else "NutriMate"
-            val text = entry.parts.joinToString(" ") { part ->
-                (part as? com.google.firebase.ai.type.TextPart)?.text.orEmpty()
-            }.trim()
-            "$speaker: $text"
-        }
-    }
-
-    private fun isHistoryUnsupportedError(e: Throwable): Boolean {
-        val msg = e.message?.lowercase() ?: return false
-        return msg.contains("history") &&
-            (msg.contains("not") || msg.contains("invalid") || msg.contains("unexpected") || msg.contains("400"))
-    }
-
-    private fun isStrictInputSchemaError(e: Throwable): Boolean {
-        val msg = e.message?.lowercase() ?: return false
-        return (msg.contains("additional") || msg.contains("unknown") || msg.contains("unexpected") || msg.contains("schema")) &&
-            (msg.contains("input") || msg.contains("property") || msg.contains("variable"))
+        chatSession = session
+        return session
     }
 
     /**
-     * Two-Tier Hybrid Execution Pipeline:
-     * 1. On-device router classifies prompt in ~1-15ms.
-     * 2. If explicit plan mutation: executes search_menu, check, find_funding, and update locally.
-     * 3. Otherwise: invokes Firebase server prompt template `nutrimate-copilot-v1` with structured user context
-     *    and streams tokens live.
+     * Agentic streaming execution pipeline:
+     * Streams Gemini 3.5 Flash-Lite, executes requested MCP tools in a bounded loop,
+     * emits live collapsible tool step cards, and stages confirmable meal swap proposals.
      */
     suspend fun processUserMessage(
         userText: String,
         currentSlots: List<MealSlot>,
         userContext: NutriMateUserContext,
+        nearbyRestaurants: List<RestaurantWithDistance> = emptyList(),
+        campusArea: CampusArea = CampusLocationManager.getDefaultArea(),
         contextBuildMs: Long = 0L,
-        userId: String?,
-        repository: NutriMateFirestoreRepository?,
+        userId: String? = null,
+        repository: NutriMateFirestoreRepository? = null,
         onStepGenerated: (ChatMessage) -> Unit
     ): ChatMessage {
         val totalStart = System.currentTimeMillis()
         val requestNum = totalRequests.incrementAndGet()
-        val route = onDeviceRouter.classify(userText)
+        val turnContext = NutriMateTurnToolContext(
+            userContext = userContext,
+            currentSlots = currentSlots,
+            nearbyRestaurants = nearbyRestaurants,
+            campusArea = campusArea
+        )
+        activeTurnContext = turnContext
 
-        // -------------------------------------------------------------------------
-        // TIER 1: Plan-changing Request (Deterministic Gatekeeper Execution)
-        // -------------------------------------------------------------------------
-        if (route.isPlanChange) {
-            val slot = route.slot
-            val query = route.query
-            val maxPrice = route.maxPriceTk
-
-            val tSearchStart = System.currentTimeMillis()
-            val searchResults = toolsGatekeeper.searchMenu(query, slot, maxPrice)
-            val searchLatency = (System.currentTimeMillis() - tSearchStart).coerceAtLeast(1L)
-
-            val searchBadge = ChatMessage(
-                id = UUID.randomUUID().toString(),
-                sender = MessageSender.FUNCTION_CALL,
-                content = "search_menu(query=\"$query\", slot=\"$slot\")",
-                toolName = "search_menu",
-                toolArgs = "query=\"$query\", slot=\"$slot\"" + (if (maxPrice != null) ", max_price_tk=$maxPrice" else ""),
-                toolResult = if (searchResults.isNotEmpty()) {
-                    "Found ${searchResults.size} items: ${searchResults.first().name} (৳${searchResults.first().priceTk})"
-                } else {
-                    "No items found matching \"$query\""
-                },
-                latencyMs = searchLatency,
-                isLocalExecution = true
-            )
-            onStepGenerated(searchBadge)
-
-            if (searchResults.isEmpty()) {
-                val tAltStart = System.currentTimeMillis()
-                val alts = toolsGatekeeper.getAlternatives(slot, maxPrice)
-                val altLatency = (System.currentTimeMillis() - tAltStart).coerceAtLeast(1L)
-
-                val altBadge = ChatMessage(
-                    id = UUID.randomUUID().toString(),
-                    sender = MessageSender.FUNCTION_CALL,
-                    content = "get_alternatives(slot=\"$slot\")",
-                    toolName = "get_alternatives",
-                    toolArgs = "slot=\"$slot\"" + (if (maxPrice != null) ", max_price_tk=$maxPrice" else ""),
-                    toolResult = "${alts.size} alternatives: ${alts.joinToString { "${it.name} (৳${it.priceTk})" }}",
-                    latencyMs = altLatency,
-                    isLocalExecution = true
-                )
-                onStepGenerated(altBadge)
-
-                val altNames = alts.take(3).joinToString { "${it.name} (৳${it.priceTk})" }
-                val assistantMsg = ChatMessage(
-                    id = UUID.randomUUID().toString(),
-                    sender = MessageSender.ASSISTANT,
-                    content = if (query.isNotBlank()) {
-                        "I couldn't find \"$query\" on your active campus menu. Tasty alternatives within budget: $altNames."
-                    } else {
-                        "Here are budget-friendly options for $slot: $altNames."
-                    },
-                    latencyMs = System.currentTimeMillis() - totalStart,
-                    isLocalExecution = true
-                )
-                onStepGenerated(assistantMsg)
-                return assistantMsg
-            }
-
-            val candidate = searchResults.first()
-            val tCheckStart = System.currentTimeMillis()
-            val checkRes = toolsGatekeeper.check(slot, candidate.itemId)
-            val checkLatency = (System.currentTimeMillis() - tCheckStart).coerceAtLeast(1L)
-
-            val checkBadge = ChatMessage(
-                id = UUID.randomUUID().toString(),
-                sender = MessageSender.FUNCTION_CALL,
-                content = "check(slot=\"$slot\", item_id=\"${candidate.itemId}\")",
-                toolName = "check",
-                toolArgs = "slot=\"$slot\", item_id=\"${candidate.itemId}\"",
-                toolResult = if (checkRes.ok) {
-                    "ok: true, price=৳${checkRes.priceTk}, allowance=৳${checkRes.slotBudgetTk}"
-                } else {
-                    "ok: false, reason=over_budget, short_by=৳${String.format("%.2f", checkRes.shortByTk ?: 0.0)}"
-                },
-                latencyMs = checkLatency,
-                isLocalExecution = true
-            )
-            onStepGenerated(checkBadge)
-
-            if (checkRes.ok && checkRes.checkToken != null) {
-                val tUpdateStart = System.currentTimeMillis()
-                val updateRes = toolsGatekeeper.update(checkRes.checkToken, currentSlots, userId, repository)
-                val updateLatency = (System.currentTimeMillis() - tUpdateStart).coerceAtLeast(1L)
-
-                val updateBadge = ChatMessage(
-                    id = UUID.randomUUID().toString(),
-                    sender = MessageSender.FUNCTION_CALL,
-                    content = "update(token=\"${checkRes.checkToken.take(8)}...\")",
-                    toolName = "update",
-                    toolArgs = "token=\"${checkRes.checkToken.take(8)}...\"",
-                    toolResult = "status: ${updateRes.status}",
-                    latencyMs = updateLatency,
-                    isLocalExecution = true
-                )
-                onStepGenerated(updateBadge)
-
-                val totalElapsed = System.currentTimeMillis() - totalStart
-                val assistantMsg = ChatMessage(
-                    id = UUID.randomUUID().toString(),
-                    sender = MessageSender.ASSISTANT,
-                    content = "Updated your $slot to ${candidate.name} (৳${candidate.priceTk}, ${candidate.kcal} kcal). It fits nicely within today's allowance!",
-                    latencyMs = totalElapsed,
-                    isLocalExecution = true
-                )
-                onStepGenerated(assistantMsg)
-                return assistantMsg
-            }
-
-            val tFundingStart = System.currentTimeMillis()
-            val fundingRes = toolsGatekeeper.findFunding(slot, candidate.itemId)
-            val fundingLatency = (System.currentTimeMillis() - tFundingStart).coerceAtLeast(1L)
-
-            val fundingBadge = ChatMessage(
-                id = UUID.randomUUID().toString(),
-                sender = MessageSender.FUNCTION_CALL,
-                content = "find_funding(slot=\"$slot\", item_id=\"${candidate.itemId}\")",
-                toolName = "find_funding",
-                toolArgs = "slot=\"$slot\", item_id=\"${candidate.itemId}\"",
-                toolResult = if (fundingRes.options.isNotEmpty()) {
-                    "option: ${fundingRes.options.first().summary}"
-                } else {
-                    "no funding available"
-                },
-                latencyMs = fundingLatency,
-                isLocalExecution = true
-            )
-            onStepGenerated(fundingBadge)
-
-            if (fundingRes.options.isEmpty()) {
-                val alts = toolsGatekeeper.getAlternatives(slot, maxPrice)
-                val altNames = alts.take(3).joinToString { "${it.name} (৳${it.priceTk})" }
-                val assistantMsg = ChatMessage(
-                    id = UUID.randomUUID().toString(),
-                    sender = MessageSender.ASSISTANT,
-                    content = "${candidate.name} exceeds today's $slot allowance by ৳${checkRes.shortByTk ?: 0.0} and no unallocated buffer or feast is available. Try: $altNames.",
-                    latencyMs = System.currentTimeMillis() - totalStart,
-                    isLocalExecution = true
-                )
-                onStepGenerated(assistantMsg)
-                return assistantMsg
-            }
-
-            val bestOption = fundingRes.options.first()
-            val tUpdateStart = System.currentTimeMillis()
-            val updateRes = toolsGatekeeper.update(bestOption.token, currentSlots, userId, repository)
-            val updateLatency = (System.currentTimeMillis() - tUpdateStart).coerceAtLeast(1L)
-
-            val updateBadge = ChatMessage(
-                id = UUID.randomUUID().toString(),
-                sender = MessageSender.FUNCTION_CALL,
-                content = "update(token=\"${bestOption.token.take(8)}...\")",
-                toolName = "update",
-                toolArgs = "token=\"${bestOption.token.take(8)}...\"",
-                toolResult = "status: ${updateRes.status}",
-                latencyMs = updateLatency,
-                isLocalExecution = true
-            )
-            onStepGenerated(updateBadge)
-
-            if (updateRes.status == "needs_confirmation") {
-                val synthesisPrompt = """
-                    USER_CONTEXT: ${userContext.toCompactJson()}
-                    The student requested: "$userText".
-                    Target meal: ${candidate.name} (৳${candidate.priceTk}) for $slot.
-                    Shortfall: ৳${bestOption.shortfallTk}.
-                    Trade-off option: ${bestOption.summary}.
-                    Explain this trade-off politely in 1 to 2 concise sentences and ask them to tap Confirm below if they want to apply it.
-                """.trimIndent()
-
-                val tGeminiStart = System.currentTimeMillis()
-                val tradeoffInputs = buildTemplateInputs(
-                    userText = synthesisPrompt,
-                    userContext = userContext,
-                    historyText = formatHistoryForTemplateInput()
-                )
-                val explanationText = try {
-                    withTimeout(STREAM_TIMEOUT_MS) {
-                        val resp = if (templateSupportsChatHistory) {
-                            try {
-                                templateModel.startChat(
-                                    templateId = PROMPT_TEMPLATE_ID,
-                                    inputs = tradeoffInputs,
-                                    history = emptyList()
-                                ).sendMessage(synthesisPrompt)
-                            } catch (e: Exception) {
-                                if (isHistoryUnsupportedError(e)) {
-                                    templateSupportsChatHistory = false
-                                    templateModel.generateContent(PROMPT_TEMPLATE_ID, tradeoffInputs)
-                                } else if (isStrictInputSchemaError(e)) {
-                                    templateModel.startChat(
-                                        templateId = PROMPT_TEMPLATE_ID,
-                                        inputs = emptyMap(),
-                                        history = emptyList()
-                                    ).sendMessage(synthesisPrompt)
-                                } else {
-                                    throw e
-                                }
-                            }
-                        } else {
-                            templateModel.generateContent(PROMPT_TEMPLATE_ID, tradeoffInputs)
-                        }
-                        resp.text?.takeIf { it.isNotBlank() }
-                    }
-                } catch (e: CancellationException) {
-                    if (e is TimeoutCancellationException) {
-                        timeoutCount.incrementAndGet()
-                        errorCount.incrementAndGet()
-                        lastCloudError = describeError(e)
-                        Log.e(AI_LOG_TAG, "Tier 2 tradeoff synthesis timed out: $lastCloudError", e)
-                        null
-                    } else throw e
-                } catch (e: Exception) {
-                    errorCount.incrementAndGet()
-                    lastCloudError = describeError(e)
-                    Log.e(AI_LOG_TAG, "Tier 2 tradeoff synthesis failed: $lastCloudError", e)
-                    null
-                } ?: "I can cover the ৳${bestOption.shortfallTk} difference by cancelling ${bestOption.feastTitle ?: "your upcoming feast"}. Please tap Confirm below if you want to proceed."
-
-                val geminiLatency = System.currentTimeMillis() - tGeminiStart
-                val assistantMsg = ChatMessage(
-                    id = UUID.randomUUID().toString(),
-                    sender = MessageSender.ASSISTANT,
-                    content = explanationText,
-                    tradeoffToken = bestOption.token,
-                    isPendingConfirmation = true,
-                    latencyMs = geminiLatency,
-                    isLocalExecution = false
-                )
-                onStepGenerated(assistantMsg)
-                return assistantMsg
-            } else if (updateRes.status == "applied") {
-                val assistantMsg = ChatMessage(
-                    id = UUID.randomUUID().toString(),
-                    sender = MessageSender.ASSISTANT,
-                    content = "Applied! Funded ৳${bestOption.shortfallTk} from your unallocated reserve. Your $slot is now ${candidate.name}!",
-                    latencyMs = System.currentTimeMillis() - totalStart,
-                    isLocalExecution = true
-                )
-                onStepGenerated(assistantMsg)
-                return assistantMsg
-            }
-        }
-
-        // -------------------------------------------------------------------------
-        // TIER 2: Personalized Real-Time Streaming Gemini Q&A
-        // -------------------------------------------------------------------------
         val assistantMsgId = UUID.randomUUID().toString()
         val textAccumulator = StringBuilder()
         var firstTokenMs: Long? = null
         var hasEmittedFirstChunk = false
 
-        val historySnapshot = snapshotHistory()
-        val templateInputs = buildTemplateInputs(
-            userText = userText,
-            userContext = userContext,
-            historyText = formatHistoryForTemplateInput()
-        )
         val contextualPrompt = """
             USER_CONTEXT: ${userContext.toCompactJson()}
             USER_MESSAGE: $userText
@@ -487,80 +234,78 @@ class NutriMateChatEngine(
         val tRequestInitStart = System.currentTimeMillis()
         Log.d(
             AI_LOG_TAG,
-            "Req #$requestNum start | template=$PROMPT_TEMPLATE_ID | router=${route.classificationTimeMs}ms | context=${contextBuildMs}ms | historyTurns=${historySnapshot.size}"
+            "Req #$requestNum start | model=$MODEL_NAME | tools=${toolRegistry.getRegisteredToolNames().size} | context=${contextBuildMs}ms"
         )
-
-        suspend fun collectResponseStream(flow: kotlinx.coroutines.flow.Flow<com.google.firebase.ai.type.GenerateContentResponse>) {
-            flow.collect { chunk ->
-                val chunkText = chunk.text.orEmpty()
-                if (chunkText.isNotEmpty()) {
-                    textAccumulator.append(chunkText)
-                    val elapsed = System.currentTimeMillis() - tRequestInitStart
-                    if (!hasEmittedFirstChunk) {
-                        hasEmittedFirstChunk = true
-                        firstTokenMs = elapsed
-                        Log.d(AI_LOG_TAG, "Req #$requestNum TTFT=${elapsed}ms")
-                    }
-                    onStepGenerated(
-                        ChatMessage(
-                            id = assistantMsgId,
-                            sender = MessageSender.ASSISTANT,
-                            content = textAccumulator.toString(),
-                            latencyMs = elapsed,
-                            firstTokenMs = firstTokenMs,
-                            isLocalExecution = false,
-                            isStreaming = true
-                        )
-                    )
-                }
-            }
-        }
 
         var streamFailure: Throwable? = null
         try {
             withTimeout(STREAM_TIMEOUT_MS) {
-                val initElapsed = System.currentTimeMillis() - tRequestInitStart
-                Log.d(AI_LOG_TAG, "Req #$requestNum requestInit=${initElapsed}ms -> opening template stream ($PROMPT_TEMPLATE_ID)")
+                val session = getOrCreateChatSession()
+                var nextInput: Content = content("user") { text(contextualPrompt) }
+                var hop = 0
 
-                if (templateSupportsChatHistory) {
-                    try {
-                        val chat = templateModel.startChat(
-                            templateId = PROMPT_TEMPLATE_ID,
-                            inputs = templateInputs,
-                            history = historySnapshot
-                        )
-                        collectResponseStream(chat.sendMessageStream(contextualPrompt))
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        if (!hasEmittedFirstChunk && isHistoryUnsupportedError(e)) {
-                            Log.w(AI_LOG_TAG, "Template $PROMPT_TEMPLATE_ID does not define {{history}}; switching to generateContentStream", e)
-                            templateSupportsChatHistory = false
-                            collectResponseStream(
-                                templateModel.generateContentStream(
-                                    templateId = PROMPT_TEMPLATE_ID,
-                                    inputs = templateInputs
+                while (hop < MAX_TOOL_HOPS) {
+                    hop++
+                    val pendingCalls = mutableListOf<FunctionCallPart>()
+
+                    session.sendMessageStream(nextInput).collect { chunk ->
+                        if (chunk.functionCalls.isNotEmpty()) {
+                            pendingCalls.addAll(chunk.functionCalls)
+                        }
+                        val chunkText = chunk.text.orEmpty()
+                        if (chunkText.isNotEmpty()) {
+                            textAccumulator.append(chunkText)
+                            val elapsed = System.currentTimeMillis() - tRequestInitStart
+                            if (!hasEmittedFirstChunk) {
+                                hasEmittedFirstChunk = true
+                                firstTokenMs = elapsed
+                                Log.d(AI_LOG_TAG, "Req #$requestNum TTFT=${elapsed}ms (hop=$hop)")
+                            }
+                            onStepGenerated(
+                                ChatMessage(
+                                    id = assistantMsgId,
+                                    sender = MessageSender.ASSISTANT,
+                                    content = textAccumulator.toString(),
+                                    latencyMs = elapsed,
+                                    firstTokenMs = firstTokenMs,
+                                    isLocalExecution = false,
+                                    isStreaming = true
                                 )
                             )
-                        } else if (!hasEmittedFirstChunk && isStrictInputSchemaError(e)) {
-                            Log.w(AI_LOG_TAG, "Template $PROMPT_TEMPLATE_ID rejected extra input keys; retrying with empty inputs + chat history", e)
-                            val chat = templateModel.startChat(
-                                templateId = PROMPT_TEMPLATE_ID,
-                                inputs = emptyMap(),
-                                history = historySnapshot
-                            )
-                            collectResponseStream(chat.sendMessageStream(contextualPrompt))
-                        } else {
-                            throw e
                         }
                     }
-                } else {
-                    collectResponseStream(
-                        templateModel.generateContentStream(
-                            templateId = PROMPT_TEMPLATE_ID,
-                            inputs = templateInputs
+
+                    if (pendingCalls.isEmpty()) {
+                        break
+                    }
+
+                    val responseParts = mutableListOf<com.google.firebase.ai.type.FunctionResponsePart>()
+                    for (call in pendingCalls) {
+                        val exec = toolRegistry.executeCall(call)
+                        responseParts.add(exec.responsePart)
+
+                        val badgeMsg = ChatMessage(
+                            id = UUID.randomUUID().toString(),
+                            sender = MessageSender.FUNCTION_CALL,
+                            content = "${exec.toolName}(${exec.argsSummary})",
+                            toolName = exec.toolName,
+                            toolArgs = exec.argsSummary.ifBlank { "none" },
+                            toolResult = exec.resultSummary,
+                            toolSource = exec.source.badgeLabel,
+                            latencyMs = exec.latencyMs,
+                            isLocalExecution = exec.source == McpToolSource.LOCAL,
+                            isError = exec.isError
                         )
-                    )
+                        onStepGenerated(badgeMsg)
+                    }
+
+                    nextInput = Content(role = "user", parts = responseParts)
+                }
+
+                // If Gemini ended on a tool call without a final natural-language message, synthesize a concise closing line
+                if (textAccumulator.isBlank() && turnContext.pendingSwapProposal != null) {
+                    val p = turnContext.pendingSwapProposal!!
+                    textAccumulator.append("I've prepared ${p.itemName} (৳${p.priceTk}, ${p.kcal} kcal) for ${p.slotName}. Tap Confirm below to apply it.")
                 }
             }
         } catch (e: CancellationException) {
@@ -574,8 +319,8 @@ class NutriMateChatEngine(
                     "Req #$requestNum TIMEOUT after ${System.currentTimeMillis() - tRequestInitStart}ms (errors=${errorCount.get()}, timeouts=${timeoutCount.get()})",
                     e
                 )
+                chatSession = null
             } else {
-                // Cooperative cancellation (e.g., user tapped Stop or left session)
                 Log.d(AI_LOG_TAG, "Req #$requestNum cancelled by user/lifecycle after ${System.currentTimeMillis() - tRequestInitStart}ms")
                 if (hasEmittedFirstChunk && textAccumulator.isNotBlank()) {
                     onStepGenerated(
@@ -601,23 +346,35 @@ class NutriMateChatEngine(
                 "Req #$requestNum FAILED after ${System.currentTimeMillis() - tRequestInitStart}ms: $lastCloudError (errors=${errorCount.get()})",
                 e
             )
+            chatSession = null
+        } finally {
+            activeTurnContext = null
         }
 
         val totalGenMs = System.currentTimeMillis() - tRequestInitStart
         val totalRequestMs = System.currentTimeMillis() - totalStart
+        val pendingProposal = turnContext.pendingSwapProposal
 
-        // Happy path or graceful preservation if substantial streamed content arrived before interruption
         if (textAccumulator.isNotBlank() && (streamFailure == null || (hasEmittedFirstChunk && textAccumulator.length >= 25))) {
             lastCloudError = null
-            appendCompletedTurn(userText, textAccumulator.toString())
             Log.d(
                 AI_LOG_TAG,
-                "Req #$requestNum COMPLETE | TTFT=${firstTokenMs ?: totalGenMs}ms | gen=${totalGenMs}ms | total=${totalRequestMs}ms | chars=${textAccumulator.length}"
+                "Req #$requestNum COMPLETE | TTFT=${firstTokenMs ?: totalGenMs}ms | gen=${totalGenMs}ms | total=${totalRequestMs}ms | chars=${textAccumulator.length} | pendingSwap=${pendingProposal != null}"
             )
             val completedMsg = ChatMessage(
                 id = assistantMsgId,
                 sender = MessageSender.ASSISTANT,
                 content = textAccumulator.toString(),
+                tradeoffToken = pendingProposal?.token,
+                isPendingConfirmation = pendingProposal != null,
+                swapFundingType = pendingProposal?.fundingType,
+                swapItemTitle = pendingProposal?.itemName,
+                swapPlaceName = pendingProposal?.placeName,
+                swapPriceTk = pendingProposal?.priceTk,
+                swapKcal = pendingProposal?.kcal,
+                swapFeastTitle = pendingProposal?.feastTitle,
+                swapShortfallTk = pendingProposal?.shortfallTk,
+                swapSummary = pendingProposal?.summary,
                 latencyMs = totalGenMs,
                 firstTokenMs = firstTokenMs,
                 isLocalExecution = false,
@@ -627,7 +384,6 @@ class NutriMateChatEngine(
             return completedMsg
         }
 
-        // Empty response or cloud failure -> surface transparent error with Retry + compact offline hint
         if (streamFailure == null && textAccumulator.isBlank()) {
             errorCount.incrementAndGet()
             lastCloudError = "Gemini returned an empty response."

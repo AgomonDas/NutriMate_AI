@@ -1194,6 +1194,8 @@ class NutriMateViewModel(
                     userText = cleanText,
                     currentSlots = _uiState.value.mealSlots,
                     userContext = userContext,
+                    nearbyRestaurants = _uiState.value.nearbyRestaurantsWithDistance,
+                    campusArea = _uiState.value.currentCampusArea,
                     contextBuildMs = contextBuildMs,
                     userId = currentUserId,
                     repository = repository,
@@ -1232,31 +1234,6 @@ class NutriMateViewModel(
                         )
                     }
                 }
-
-                if (finalMsg.isPendingConfirmation && finalMsg.tradeoffToken != null) {
-                    val stored = chatEngine.toolsGatekeeper.getStoredToken(finalMsg.tradeoffToken)
-                    val candidateFeast = stored?.feastToCancel ?: feastState.value.feasts.firstOrNull { !it.isCancelled }
-                    val slotId = stored?.slotId ?: "lunch"
-                    val slot = _uiState.value.mealSlots.find { it.id == slotId }
-                    val slotAllowance = feastState.value.mealAllowancesPaisa[slotId] ?: 8_088L
-                    val proposal = TradeoffProposal(
-                        mealId = slotId,
-                        mealName = slot?.name ?: slotId.replaceFirstChar { it.uppercase() },
-                        currentAllowancePaisa = slotAllowance,
-                        requestedItemName = stored?.item?.name ?: "Kacchi Biriyani",
-                        requestedPlaceName = stored?.item?.place ?: "Star Kabab & Biriyani",
-                        requestedPricePaisa = stored?.pricePaisa ?: 12_000L,
-                        requestedKcal = stored?.item?.kcal ?: 850,
-                        shortfallPaisa = stored?.shortfallPaisa ?: 3_912L,
-                        usedUnallocatedPaisa = stored?.unallocatedUsedPaisa ?: 0L,
-                        feastToCancel = candidateFeast,
-                        remainderToUnallocatedPaisa = if (candidateFeast != null) {
-                            (candidateFeast.budgetPaisa - (stored?.shortfallPaisa ?: 3_912L)).coerceAtLeast(0L)
-                        } else 0L,
-                        plainEnglishExplanation = finalMsg.content
-                    )
-                    _uiState.update { it.copy(activeTradeoffProposal = proposal) }
-                }
             } catch (e: CancellationException) {
                 _uiState.update { state ->
                     state.copy(
@@ -1286,6 +1263,7 @@ class NutriMateViewModel(
 
     fun confirmInChatTradeoff(token: String) {
         viewModelScope.launch {
+            val storedBefore = chatEngine.toolsGatekeeper.getStoredToken(token)
             val proposal = chatEngine.toolsGatekeeper.confirmTradeoff(
                 token = token,
                 currentSlots = _uiState.value.mealSlots,
@@ -1293,28 +1271,46 @@ class NutriMateViewModel(
                 repository = repository
             )
             if (proposal != null) {
+                val priceTk = (proposal.requestedPricePaisa / 100).toInt()
                 updateSlotOptionDirectly(
                     slotId = proposal.mealId,
                     itemName = proposal.requestedItemName,
                     placeName = proposal.requestedPlaceName,
-                    priceTaka = (proposal.requestedPricePaisa / 100).toInt(),
+                    priceTaka = priceTk,
                     kcal = proposal.requestedKcal
                 )
+                val badgeResult = when {
+                    storedBefore?.isManualLog == true -> "Logged ${proposal.requestedItemName} (৳$priceTk) to ${proposal.mealId}"
+                    proposal.feastToCancel != null -> "Feast cancelled, remainder returned to reserve, ${proposal.mealId} updated"
+                    proposal.usedUnallocatedPaisa > 0 -> "Funded from unallocated reserve, ${proposal.mealId} updated"
+                    else -> "Applied within allowance, ${proposal.mealId} updated"
+                }
                 val confirmBadge = ChatMessage(
                     id = UUID.randomUUID().toString(),
                     sender = MessageSender.FUNCTION_CALL,
                     content = "gatekeeper.confirm(token=\"${token.take(8)}...\")",
                     toolName = "gatekeeper.confirm",
                     toolArgs = "token=\"${token.take(8)}...\"",
-                    toolResult = "Feast cancelled, remainder returned to U, ${proposal.mealId} allowance updated",
-                    latencyMs = 8L,
+                    toolResult = badgeResult,
+                    toolSource = "local",
+                    latencyMs = 6L,
                     isLocalExecution = true
                 )
+                val replyText = when {
+                    storedBefore?.isManualLog == true ->
+                        "Meal logged! ${proposal.requestedItemName} from ${proposal.requestedPlaceName} (৳$priceTk, ${proposal.requestedKcal} kcal) is saved to ${proposal.mealName}."
+                    proposal.feastToCancel != null ->
+                        "Trade-off confirmed! ${proposal.requestedItemName} is scheduled for ${proposal.mealName}. ${proposal.feastToCancel.title} has been cancelled and the remaining savings returned to your buffer."
+                    proposal.usedUnallocatedPaisa > 0 ->
+                        "Swap confirmed! ${proposal.requestedItemName} (৳$priceTk) is scheduled for ${proposal.mealName} using ৳${(proposal.usedUnallocatedPaisa / 100.0).toInt()} from your unallocated reserve."
+                    else ->
+                        "Swap confirmed! ${proposal.requestedItemName} (৳$priceTk, ${proposal.requestedKcal} kcal) is now scheduled for ${proposal.mealName}."
+                }
                 val confirmReply = ChatMessage(
                     id = UUID.randomUUID().toString(),
                     sender = MessageSender.ASSISTANT,
-                    content = "Trade-off confirmed! ${proposal.requestedItemName} is scheduled for ${proposal.mealName}. Friday's feast has been cancelled and the remaining savings returned to your buffer.",
-                    latencyMs = 12L,
+                    content = replyText,
+                    latencyMs = 8L,
                     isLocalExecution = true
                 )
                 _uiState.update { state ->
@@ -1324,7 +1320,7 @@ class NutriMateViewModel(
                     state.copy(
                         chatMessages = updatedMessages,
                         activeTradeoffProposal = null,
-                        undoNoticeMessage = "Trade-off applied: ${proposal.requestedItemName} for ${proposal.mealName}."
+                        undoNoticeMessage = "Updated ${proposal.mealName}: ${proposal.requestedItemName}."
                     )
                 }
             }
@@ -1332,12 +1328,18 @@ class NutriMateViewModel(
     }
 
     fun declineInChatTradeoff(token: String) {
-        val alternatives = chatEngine.toolsGatekeeper.getAlternatives("lunch")
+        val stored = chatEngine.toolsGatekeeper.getStoredToken(token)
+        val slotId = stored?.slotId ?: "lunch"
+        val alternatives = chatEngine.toolsGatekeeper.getAlternatives(slotId)
         val altText = alternatives.joinToString { "${it.name} (৳${it.priceTk})" }
         val cancelReply = ChatMessage(
             id = UUID.randomUUID().toString(),
             sender = MessageSender.ASSISTANT,
-            content = "Trade-off declined. Your feast remains scheduled! Here are delicious options within today's allowance: $altText."
+            content = if (altText.isNotBlank()) {
+                "Cancelled — your meal plan and feasts remain unchanged! Other $slotId options within allowance: $altText."
+            } else {
+                "Cancelled — your meal plan and feasts remain unchanged!"
+            }
         )
         _uiState.update { state ->
             val updatedMessages = state.chatMessages.map {

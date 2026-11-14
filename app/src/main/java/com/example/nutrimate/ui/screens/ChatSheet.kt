@@ -119,7 +119,7 @@ fun ChatSheet(
                                 .padding(horizontal = 7.dp, vertical = 2.dp)
                         ) {
                             Text(
-                                text = "⚡ Hybrid Copilot",
+                                text = "⚡ Agentic MCP",
                                 fontSize = 10.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = MintAccentGlow
@@ -127,7 +127,7 @@ fun ChatSheet(
                         }
                     }
                     Text(
-                        text = "Personalized nutrition & ৳ budget · NutriMate Copilot",
+                        text = "Agentic nutrition & ৳ budget · Gemini 3.5",
                         fontSize = 12.sp,
                         color = Color.White.copy(alpha = 0.72f),
                         modifier = Modifier.padding(top = 2.dp)
@@ -437,10 +437,10 @@ fun ChatBubble(
                                             val ttft = message.firstTokenMs?.let { "TTFT ${it}ms · " } ?: ""
                                             "● ${ttft}streaming…"
                                         }
-                                        message.isLocalExecution -> "⚡ ${message.latencyMs}ms · on-device"
+                                        message.isLocalExecution -> "⚡ ${message.latencyMs}ms · local"
                                         message.firstTokenMs != null ->
-                                            "☁️ TTFT ${message.firstTokenMs}ms · ${message.latencyMs}ms · Template"
-                                        else -> "☁️ ${message.latencyMs}ms · Template"
+                                            "☁️ TTFT ${message.firstTokenMs}ms · ${message.latencyMs}ms · Gemini 3.5"
+                                        else -> "☁️ ${message.latencyMs}ms · Gemini 3.5"
                                     }
                                     Text(
                                         text = tagText,
@@ -453,32 +453,75 @@ fun ChatBubble(
                         }
                     }
 
-                    // Inline Trade-off Confirmation Action Box
+                    // Inline Swap / Trade-off Confirmation Card (Always Confirm Before Mutation)
                     if (message.isPendingConfirmation && message.tradeoffToken != null) {
+                        val isFeastSacrifice = message.swapFundingType == "FEAST_SACRIFICE"
+                        val isReserve = message.swapFundingType == "RESERVE"
+                        val isManualLog = message.swapFundingType == "MANUAL_LOG"
+                        val cardBorderColor = if (isFeastSacrifice) TagYellow.copy(alpha = 0.65f) else MintAccent.copy(alpha = 0.6f)
+                        val cardHeaderColor = if (isFeastSacrifice) TagYellow else MintAccentGlow
+                        val cardTitle = when {
+                            isFeastSacrifice -> "⚠️ Confirm Feast Trade-Off"
+                            isReserve -> "🍽️ Confirm Reserve-Funded Swap"
+                            isManualLog -> "📝 Confirm Logged Meal"
+                            else -> "🍽️ Confirm Meal Swap"
+                        }
+                        val dishLine = listOfNotNull(
+                            message.swapItemTitle,
+                            message.swapPriceTk?.let { "৳$it" },
+                            message.swapKcal?.let { "$it kcal" }
+                        ).joinToString(" · ")
+                        val fundingDetail = when {
+                            isFeastSacrifice -> {
+                                val feastName = message.swapFeastTitle ?: "an upcoming feast"
+                                val diff = message.swapShortfallTk?.let { "৳${it.toInt()}" } ?: "the difference"
+                                "Cancels $feastName to fund $diff. Remainder returns to your savings."
+                            }
+                            isReserve -> {
+                                val diff = message.swapShortfallTk?.let { "৳${it.toInt()}" } ?: "shortfall"
+                                "Covers $diff from your unallocated reserve. No feast sacrificed."
+                            }
+                            isManualLog -> {
+                                val place = message.swapPlaceName?.let { " at $it" }.orEmpty()
+                                "Saves this custom meal$place to your daily plan."
+                            }
+                            else -> "Fits cleanly within today's slot allowance. No feast sacrificed."
+                        }
+
                         Spacer(modifier = Modifier.height(6.dp))
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(16.dp))
                                 .background(Color(0xFF14223A))
-                                .border(1.dp, TagYellow.copy(alpha = 0.6f), RoundedCornerShape(16.dp))
+                                .border(1.dp, cardBorderColor, RoundedCornerShape(16.dp))
                                 .padding(12.dp)
                         ) {
-                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                                 Text(
-                                    text = "⚠️ Feast Sacrifice Required",
+                                    text = cardTitle,
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.Bold,
-                                    color = TagYellow
+                                    color = cardHeaderColor
                                 )
+                                if (dishLine.isNotBlank()) {
+                                    Text(
+                                        text = dishLine,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = Color.White
+                                    )
+                                }
                                 Text(
-                                    text = "To fund this upgrade, an upcoming planned feast will be cancelled. Remainder returns to your savings.",
+                                    text = fundingDetail,
                                     fontSize = 11.sp,
                                     color = Color.White.copy(alpha = 0.8f),
                                     lineHeight = 15.sp
                                 )
                                 Row(
-                                    modifier = Modifier.fillMaxWidth(),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(top = 2.dp),
                                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
                                     Button(
@@ -541,20 +584,24 @@ fun CollapsibleToolStepCard(
     var isExpanded by remember { mutableStateOf(false) }
 
     val toolIcon = when (message.toolName) {
-        "search_menu" -> "🔍"
-        "check" -> "⚖️"
-        "find_funding" -> "💡"
-        "update" -> "🔒"
+        "get_user_context" -> "👤"
+        "search_campus_menu", "search_menu" -> "🔍"
+        "get_nearby_restaurants" -> "📍"
+        "check_meal_budget", "check" -> "⚖️"
+        "find_funding_options", "find_funding" -> "💡"
+        "propose_meal_swap", "update" -> "🍽️"
+        "log_manual_meal" -> "📝"
         "gatekeeper.confirm" -> "🔓"
         "get_alternatives" -> "🥗"
-        else -> "⚙️"
+        else -> "🔌"
     }
 
+    val sourceLabel = message.toolSource ?: if (message.isLocalExecution) "local" else "mcp-http"
     val latencyBadge = when {
-        message.latencyMs != null && message.isLocalExecution -> "⚡ ${message.latencyMs}ms · on-device"
-        message.latencyMs != null && !message.isLocalExecution -> "☁️ ${message.latencyMs}ms · Template"
-        message.isLocalExecution -> "⚡ local"
-        else -> "☁️ cloud"
+        message.latencyMs != null && message.isLocalExecution -> "⚡ ${message.latencyMs}ms · $sourceLabel"
+        message.latencyMs != null && !message.isLocalExecution -> "🌐 ${message.latencyMs}ms · $sourceLabel"
+        message.isLocalExecution -> "⚡ $sourceLabel"
+        else -> "🌐 $sourceLabel"
     }
 
     Row(

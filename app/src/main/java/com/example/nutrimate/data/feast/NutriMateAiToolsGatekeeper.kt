@@ -62,7 +62,8 @@ data class StoredToken(
     val requiresConfirmation: Boolean,
     val feastToCancel: PlannedFeast?,
     val unallocatedUsedPaisa: Long,
-    val summary: String
+    val summary: String,
+    val isManualLog: Boolean = false
 )
 
 class NutriMateAiToolsGatekeeper(
@@ -125,27 +126,39 @@ class NutriMateAiToolsGatekeeper(
 
     fun getStoredToken(token: String): StoredToken? = tokenStore[token]
 
+    private fun normalizeFoodQuery(raw: String): String = raw.trim().lowercase()
+        .replace("biryani", "biriyani")
+        .replace("teheri", "tehari")
+        .replace("khichdi", "khichuri")
+        .replace("shobji", "sabji")
+        .replace("vegetable", "veg")
+
     /**
      * Tool 1: search_menu(query, slot, max_price_tk)
      * Returns up to 5 matching items {item_id, name, place, price_tk, kcal}.
      */
     fun searchMenu(query: String, slot: String? = null, maxPriceTk: Int? = null): List<AiMenuItem> {
-        val q = query.trim().lowercase()
+        val rawQ = query.trim().lowercase()
+        val normQ = normalizeFoodQuery(query)
+        val tokens = normQ.split(Regex("\\s+")).filter { it.length >= 2 }
         return menuCatalog
             .filter { item ->
-                val matchesQuery = q.isEmpty() ||
-                        item.name.lowercase().contains(q) ||
-                        item.itemId.lowercase().contains(q) ||
-                        item.place.lowercase().contains(q)
+                val haystack = normalizeFoodQuery("${item.name} ${item.itemId} ${item.place}")
+                val rawHaystack = "${item.name} ${item.itemId} ${item.place}".lowercase()
+                val matchesQuery = rawQ.isEmpty() ||
+                    rawHaystack.contains(rawQ) ||
+                    haystack.contains(normQ) ||
+                    (tokens.isNotEmpty() && tokens.all { haystack.contains(it) })
                 val matchesSlot = slot.isNullOrBlank() || item.slot.equals(slot.trim(), ignoreCase = true)
                 val matchesPrice = maxPriceTk == null || item.priceTk <= maxPriceTk
                 matchesQuery && matchesSlot && matchesPrice
             }
             .sortedByDescending { item ->
+                val normName = normalizeFoodQuery(item.name)
                 when {
-                    item.name.lowercase().contains(q) -> 2
-                    item.itemId.lowercase().contains(q) -> 2
-                    item.place.lowercase().contains(q) -> 1
+                    normQ.isNotEmpty() && normName.contains(normQ) -> 3
+                    item.name.lowercase().contains(rawQ) -> 2
+                    item.place.lowercase().contains(rawQ) -> 1
                     else -> 0
                 }
             }
@@ -355,9 +368,43 @@ class NutriMateAiToolsGatekeeper(
         }
     }
 
+    fun stageCustomMealProposal(
+        slot: String,
+        dishName: String,
+        placeName: String,
+        priceTk: Int,
+        kcal: Int
+    ): StoredToken {
+        val normalizedSlot = slot.lowercase().trim()
+        val token = "log_" + UUID.randomUUID().toString().take(12)
+        val item = AiMenuItem(
+            itemId = "manual_${token}",
+            name = dishName,
+            place = placeName,
+            priceTk = priceTk,
+            kcal = kcal,
+            slot = normalizedSlot
+        )
+        val summary = "Log $dishName from $placeName (৳$priceTk, $kcal kcal) to your $normalizedSlot slot."
+        val stored = StoredToken(
+            token = token,
+            slotId = normalizedSlot,
+            item = item,
+            pricePaisa = priceTk * 100L,
+            shortfallPaisa = 0L,
+            requiresConfirmation = true,
+            feastToCancel = null,
+            unallocatedUsedPaisa = 0L,
+            summary = summary,
+            isManualLog = true
+        )
+        tokenStore[token] = stored
+        return stored
+    }
+
     /**
-     * Confirms a feast trade-off that was in needs_confirmation status.
-     * Called when the student taps the Confirm button in the chat or dialog.
+     * Confirms any staged meal swap or manual log proposal.
+     * Called only when the student explicitly taps Confirm in chat.
      */
     suspend fun confirmTradeoff(
         token: String,
@@ -380,11 +427,27 @@ class NutriMateAiToolsGatekeeper(
             shortfallPaisa = stored.shortfallPaisa,
             usedUnallocatedPaisa = stored.unallocatedUsedPaisa,
             feastToCancel = stored.feastToCancel,
-            remainderToUnallocatedPaisa = if (stored.feastToCancel != null) (stored.feastToCancel.budgetPaisa - stored.shortfallPaisa).coerceAtLeast(0L) else 0L,
+            remainderToUnallocatedPaisa = if (stored.feastToCancel != null) {
+                (stored.feastToCancel.budgetPaisa - stored.shortfallPaisa).coerceAtLeast(0L)
+            } else 0L,
             plainEnglishExplanation = stored.summary
         )
 
-        val success = feastGatekeeper.applyTradeoff(proposal, slot, userId, repository)
+        val success = if (stored.isManualLog) {
+            feastGatekeeper.logManualMealAndSubmitToCommunity(
+                userId = userId ?: "local_student",
+                restaurantName = stored.item.place,
+                dishName = stored.item.name,
+                spentTaka = stored.item.priceTk,
+                calories = stored.item.kcal,
+                mealSlotId = slot.id,
+                mealSlotName = slot.name,
+                emoji = slot.emoji,
+                repository = repository
+            )
+        } else {
+            feastGatekeeper.applyTradeoff(proposal, slot, userId, repository)
+        }
         return if (success) proposal else null
     }
 
